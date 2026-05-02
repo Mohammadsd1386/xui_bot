@@ -340,8 +340,10 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(adm_admins,        pattern="^adm_admins$"))
     app.add_handler(CallbackQueryHandler(adm_del_admin,     pattern="^adm_del_admin_\\d+$"))
 
-    # ─── Catch-all text for tx hash ───────────────────────────────────────────
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_hash))
+    # ─── Catch-all for tx hash: text OR photo ──────────────────────────────────
+    # Must come LAST so ConversationHandlers get priority
+    hash_filter = (filters.TEXT & ~filters.COMMAND) | filters.PHOTO | filters.Document.IMAGE
+    app.add_handler(MessageHandler(hash_filter, receive_hash))
 
     app.add_error_handler(error_handler)
     return app

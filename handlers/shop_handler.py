@@ -148,26 +148,57 @@ async def crypto_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pay_id = context.user_data.pop("awaiting_hash_for", None)
+    """Handle both text (tx hash) and photo (receipt image) for payment confirmation."""
+    pay_id = context.user_data.get("awaiting_hash_for")
     if not pay_id:
+        # Not waiting for hash — ignore silently
         return
-    tx = update.message.text.strip() if update.message.text else "رسید تصویری"
+
+    context.user_data.pop("awaiting_hash_for", None)
+
+    # Determine tx content — text hash or photo receipt
+    is_photo = bool(update.message.photo or update.message.document)
+    if is_photo:
+        tx = "رسید تصویری"
+        photo_file_id = None
+        if update.message.photo:
+            photo_file_id = update.message.photo[-1].file_id
+        elif update.message.document:
+            photo_file_id = update.message.document.file_id
+    else:
+        tx = (update.message.text or "").strip()
+        photo_file_id = None
+
+    if not tx and not photo_file_id:
+        await update.message.reply_text(
+            "❌ لطفاً هش تراکنش (متن) یا تصویر رسید ارسال کنید.",
+        )
+        context.user_data["awaiting_hash_for"] = pay_id
+        return
+
     from database import get_db
     with get_db() as db:
         db.execute("UPDATE payments SET tx_hash=? WHERE id=?", (tx, pay_id))
-        pay = dict(db.execute("SELECT * FROM payments WHERE id=?", (pay_id,)).fetchone())
+        row = db.execute("SELECT * FROM payments WHERE id=?", (pay_id,)).fetchone()
+        if not row:
+            await update.message.reply_text("❌ پرداخت یافت نشد.")
+            return
+        pay = dict(row)
 
     await update.message.reply_text(
-        f"✅ رسید دریافت شد!\n🆔 شناسه: `{pay_id}`\nپس از تأیید ادمین، سرویس فعال می‌شود.",
+        f"✅ *رسید دریافت شد!*\n"
+        f"🆔 شناسه پرداخت: `{pay_id}`\n"
+        f"پس از تأیید ادمین، سرویس فعال می‌شود.",
         parse_mode="Markdown"
     )
+
     user = update.effective_user
     notify = (
         f"💳 *پرداخت جدید — شناسه #{pay_id}*\n\n"
         f"👤 [{user.full_name}](tg://user?id={user.id}) (`{user.id}`)\n"
         f"💰 مبلغ: `{fmt_rial(pay['amount_rial'])}`\n"
         f"🌐 درگاه: {gateway_label(pay['gateway'])}\n"
-        f"📝 هش: `{tx}`"
+        f"📝 هش/رسید: `{tx}`"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ تأیید", callback_data=f"adm_pay_ok_{pay_id}"),
@@ -176,6 +207,10 @@ async def receive_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for aid in get_admin_ids():
         try:
             await context.bot.send_message(aid, notify, parse_mode="Markdown", reply_markup=kb)
+            # Forward the actual photo to admin if it was an image
+            if photo_file_id:
+                await context.bot.send_photo(aid, photo_file_id,
+                                              caption=f"📎 رسید پرداخت #{pay_id}")
         except Exception:
             pass
 
