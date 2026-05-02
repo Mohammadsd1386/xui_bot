@@ -6,6 +6,7 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent / "vpnbot.db"
 logger = logging.getLogger(__name__)
 
+
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -21,6 +22,7 @@ def get_db():
     finally:
         conn.close()
 
+
 def init_db():
     with get_db() as db:
         db.executescript("""
@@ -35,72 +37,88 @@ def init_db():
             type TEXT NOT NULL CHECK(type IN ('xui','marzban')),
             url TEXT NOT NULL, path TEXT DEFAULT '', username TEXT NOT NULL,
             password TEXT NOT NULL, inbound_id INTEGER DEFAULT 1,
-            is_active INTEGER DEFAULT 1, created_at INTEGER DEFAULT (strftime('%s','now'))
+            is_active INTEGER DEFAULT 1,
+            created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         CREATE TABLE IF NOT EXISTS plans (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-            gb REAL NOT NULL, days INTEGER NOT NULL, price_rial INTEGER DEFAULT 0,
-            price_usdt REAL DEFAULT 0, is_active INTEGER DEFAULT 1,
+            gb REAL NOT NULL, days INTEGER NOT NULL,
+            price_rial INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
             panel_id INTEGER REFERENCES panels(id),
             created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         CREATE TABLE IF NOT EXISTS users (
-            telegram_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT, phone TEXT,
-            referrer_id INTEGER REFERENCES users(telegram_id),
-            balance_rial INTEGER DEFAULT 0, discount_pct INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0, free_test_used INTEGER DEFAULT 0,
+            telegram_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT,
+            referrer_id INTEGER, balance_rial INTEGER DEFAULT 0,
+            discount_pct INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0,
+            free_test_used INTEGER DEFAULT 0,
             created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(telegram_id),
-            plan_id INTEGER REFERENCES plans(id), panel_id INTEGER REFERENCES panels(id),
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL, plan_id INTEGER, panel_id INTEGER,
             client_uuid TEXT, client_email TEXT, sub_link TEXT,
             gb REAL, days INTEGER, price_paid INTEGER DEFAULT 0,
             currency TEXT DEFAULT 'rial',
-            status TEXT DEFAULT 'pending' CHECK(status IN ('pending','active','expired','cancelled')),
+            status TEXT DEFAULT 'pending',
             expires_at INTEGER, created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(telegram_id),
-            order_id INTEGER REFERENCES orders(id), amount_rial INTEGER DEFAULT 0,
-            amount_crypto REAL DEFAULT 0, currency TEXT,
-            gateway TEXT CHECK(gateway IN ('zarinpal','usdt_bep20','tron','ton','balance')),
-            tx_hash TEXT,
-            status TEXT DEFAULT 'pending' CHECK(status IN ('pending','confirming','confirmed','failed')),
-            created_at INTEGER DEFAULT (strftime('%s','now')), confirmed_at INTEGER
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL, order_id INTEGER,
+            amount_rial INTEGER DEFAULT 0, amount_crypto REAL DEFAULT 0,
+            currency TEXT, gateway TEXT, tx_hash TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT (strftime('%s','now')),
+            confirmed_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER NOT NULL REFERENCES users(telegram_id),
-            referred_id INTEGER NOT NULL REFERENCES users(telegram_id),
-            reward_rial INTEGER DEFAULT 0, created_at INTEGER DEFAULT (strftime('%s','now')),
+            referrer_id INTEGER NOT NULL, referred_id INTEGER NOT NULL,
+            reward_rial INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT (strftime('%s','now')),
             UNIQUE(referred_id)
         );
         CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(telegram_id),
-            subject TEXT, status TEXT DEFAULT 'open' CHECK(status IN ('open','answered','closed')),
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL, subject TEXT,
+            status TEXT DEFAULT 'open',
             created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         CREATE TABLE IF NOT EXISTS ticket_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER NOT NULL REFERENCES tickets(id),
-            sender_id INTEGER NOT NULL, is_admin INTEGER DEFAULT 0, message TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL, sender_id INTEGER NOT NULL,
+            is_admin INTEGER DEFAULT 0, message TEXT NOT NULL,
             created_at INTEGER DEFAULT (strftime('%s','now'))
         );
         INSERT OR IGNORE INTO settings VALUES
-            ('bot_token',''),('owner_id',''),('bot_name','ربات فروش VPN'),('bot_username',''),
-            ('zarinpal_merchant',''),('usdt_bep20_address',''),('tron_address',''),
-            ('ton_address',''),('ton_memo',''),('usd_to_rial','650000'),
-            ('ton_price_usd','3.5'),('referral_reward_rial','50000'),
-            ('free_test_gb','1'),('free_test_days','3'),('free_test_enabled','0'),
-            ('support_username',''),('channel_id',''),('channel_join_required','0'),
-            ('bscscan_api_key',''),('min_payment_rial','50000');
+            ('bot_name','ربات فروش VPN'),
+            ('owner_id',''),
+            ('zarinpal_merchant',''),
+            ('usdt_bep20_address',''),
+            ('tron_address',''),
+            ('ton_address',''),
+            ('ton_memo',''),
+            ('ton_price_usd','3.5'),
+            ('usd_to_rial','650000'),
+            ('referral_reward_rial','50000'),
+            ('free_test_gb','1'),
+            ('free_test_days','3'),
+            ('free_test_enabled','0'),
+            ('support_username',''),
+            ('channel_id',''),
+            ('channel_join_required','0'),
+            ('bscscan_api_key',''),
+            ('zarinpal_callback','https://t.me/your_bot');
         """)
-    logger.info("✅ Database initialized")
+    logger.info("DB initialized")
 
-def get_setting(key: str, default=None):
+
+def get_setting(key: str, default: str = "") -> str:
     with get_db() as db:
         row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-        return row["value"] if row else default
+        return row["value"] if row and row["value"] is not None else default
+
 
 def set_setting(key: str, value: str):
     with get_db() as db:
