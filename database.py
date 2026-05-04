@@ -61,7 +61,9 @@ def init_db():
             gb REAL, days INTEGER, price_paid INTEGER DEFAULT 0,
             currency TEXT DEFAULT 'rial',
             status TEXT DEFAULT 'pending',
-            expires_at INTEGER, created_at INTEGER DEFAULT (strftime('%s','now'))
+            expires_at INTEGER, created_at INTEGER DEFAULT (strftime('%s','now')),
+            extends_order_id INTEGER,
+            config_name TEXT
         );
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +129,10 @@ def init_db():
             ('pay_ton_enabled','1'),
             ('card2card_number',''),
             ('card2card_holder',''),
+            ('usdt_to_rial','650000'),
+            ('rates_updated_at','0'),
+            ('rates_refresh_sec','3600'),
+            ('rates_auto_enabled','1'),
             ('bscscan_api_key',''),
             ('zarinpal_callback','https://t.me/your_bot');
         """)
@@ -134,6 +140,8 @@ def init_db():
         cols = {r["name"] for r in db.execute("PRAGMA table_info(orders)").fetchall()}
         if "config_name" not in cols:
             db.execute("ALTER TABLE orders ADD COLUMN config_name TEXT")
+        if "extends_order_id" not in cols:
+            db.execute("ALTER TABLE orders ADD COLUMN extends_order_id INTEGER")
         default_settings = {
             "pay_balance_enabled": "1",
             "pay_zarinpal_enabled": "1",
@@ -143,6 +151,10 @@ def init_db():
             "pay_ton_enabled": "1",
             "card2card_number": "",
             "card2card_holder": "",
+            "usdt_to_rial": "650000",
+            "rates_updated_at": "0",
+            "rates_refresh_sec": "3600",
+            "rates_auto_enabled": "1",
         }
         for k, v in default_settings.items():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))

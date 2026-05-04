@@ -132,7 +132,8 @@ def adm_main_kb():
 
 def adm_settings_kb():
     return _kb([
-        [("💱 نرخ دلار", "set_usd_rate"), ("🎁 پاداش رفرال", "set_referral")],
+        [("🔄 بروز نرخ (API)", "adm_sync_rates"), ("💱 نرخ دستی", "set_usd_rate")],
+        [("🎁 پاداش رفرال", "set_referral")],
         [("🧪 تست رایگان", "set_free_test"), ("📢 کانال اجباری", "set_channel")],
         [("💳 روش‌های پرداخت", "set_payment_methods"), ("🏦 کارت‌به‌کارت", "set_card_info")],
         [("💎 آدرس تتر BEP20", "set_usdt_addr"), ("🔵 آدرس ترون", "set_tron_addr")],

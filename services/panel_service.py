@@ -235,6 +235,26 @@ class MarzbanApi:
     async def delete_user(self, username: str):
         return await self._req("DELETE", f"/user/{username}")
 
+    async def renew_user(self, username: str, extra_gb: float = 0, extra_days: int = 0):
+        ok, u = await self._req("GET", f"/user/{username}")
+        if not ok:
+            return False, u
+        exp = u.get("expire")
+        if exp is None:
+            base = int(time.time())
+        else:
+            base = max(int(exp), int(time.time()))
+        new_exp = int(base + extra_days * 86400) if extra_days > 0 else base
+        cur_dl = u.get("data_limit") or 0
+        add_b = int(extra_gb * (1024 ** 3)) if extra_gb > 0 else 0
+        new_dl = cur_dl + add_b if add_b else cur_dl
+        payload = {"status": "active", "data_limit": new_dl if new_dl > 0 else None}
+        if extra_days > 0:
+            payload["expire"] = new_exp
+        elif u.get("expire") is not None:
+            payload["expire"] = u.get("expire")
+        return await self._req("PUT", f"/user/{username}", payload)
+
     async def restart(self):
         return await self._req("POST", "/restart")
 

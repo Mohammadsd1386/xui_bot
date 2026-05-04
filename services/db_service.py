@@ -178,12 +178,22 @@ def update_plan_field(plan_id: int, field: str, value):
 
 # ── ORDERS ────────────────────────────────────────────────────────────────────
 
-def create_order(user_id, plan_id, panel_id, gb, days, price_rial, currency="rial", config_name: str = None) -> int:
+def create_order(
+    user_id,
+    plan_id,
+    panel_id,
+    gb,
+    days,
+    price_rial,
+    currency="rial",
+    config_name: str = None,
+    extends_order_id: int | None = None,
+) -> int:
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO orders(user_id,plan_id,panel_id,gb,days,price_paid,currency,status,config_name) "
-            "VALUES(?,?,?,?,?,?,'rial','pending',?)",
-            (user_id, plan_id, panel_id, gb, days, price_rial, config_name)
+            "INSERT INTO orders(user_id,plan_id,panel_id,gb,days,price_paid,currency,status,config_name,extends_order_id) "
+            "VALUES(?,?,?,?,?,?,'rial','pending',?,?)",
+            (user_id, plan_id, panel_id, gb, days, price_rial, config_name, extends_order_id),
         )
         return cur.lastrowid
 
@@ -207,8 +217,21 @@ def get_user_orders(user_id: int) -> list:
             "SELECT o.*, p.name as plan_name, pn.name as panel_name "
             "FROM orders o LEFT JOIN plans p ON o.plan_id=p.id "
             "LEFT JOIN panels pn ON o.panel_id=pn.id "
-            "WHERE o.user_id=? ORDER BY o.created_at DESC",
-            (user_id,)
+            "WHERE o.user_id=? AND o.extends_order_id IS NULL "
+            "ORDER BY o.created_at DESC",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_user_orders_admin(user_id: int, limit: int = 25) -> list:
+    """همه سفارش‌ها شامل تمدیدهای داخلی — فقط برای ادمین."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT o.*, p.name as plan_name FROM orders o "
+            "LEFT JOIN plans p ON o.plan_id=p.id "
+            "WHERE o.user_id=? ORDER BY o.created_at DESC LIMIT ?",
+            (user_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -222,8 +245,8 @@ def get_order(order_id: int) -> dict | None:
 # ── PAYMENTS ──────────────────────────────────────────────────────────────────
 
 def create_payment(user_id: int, order_id: int, amount_rial: int, gateway: str) -> int:
-    usd_rate = int(get_setting("usd_to_rial", "650000"))
-    amount_crypto = round(amount_rial / usd_rate, 4) if gateway not in ("zarinpal", "balance") else 0.0
+    usd_rate = int(get_setting("usdt_to_rial") or get_setting("usd_to_rial", "650000"))
+    amount_crypto = round(amount_rial / usd_rate, 4) if gateway not in ("zarinpal", "balance", "card2card") else 0.0
     with get_db() as db:
         cur = db.execute(
             "INSERT INTO payments(user_id,order_id,amount_rial,amount_crypto,gateway) VALUES(?,?,?,?,?)",
@@ -242,13 +265,22 @@ def confirm_payment(payment_id: int, tx_hash: str = None):
             "UPDATE payments SET status='confirmed', tx_hash=?, confirmed_at=strftime('%s','now') WHERE id=?",
             (tx_hash, payment_id)
         )
+        is_extension = False
         if p.get("order_id"):
-            db.execute("UPDATE orders SET status='active' WHERE id=?", (p["order_id"],))
-        # Referral reward on first purchase
+            orow = db.execute(
+                "SELECT extends_order_id FROM orders WHERE id=?", (p["order_id"],)
+            ).fetchone()
+            ext_parent = dict(orow).get("extends_order_id") if orow else None
+            if ext_parent:
+                is_extension = True
+                db.execute("UPDATE orders SET status='merged' WHERE id=?", (p["order_id"],))
+            else:
+                db.execute("UPDATE orders SET status='active' WHERE id=?", (p["order_id"],))
+        # Referral reward on first purchase (نه برای پرداخت تمدید/افزایش حجم)
         ref = db.execute(
             "SELECT * FROM referrals WHERE referred_id=? AND reward_rial=0", (p["user_id"],)
         ).fetchone()
-        if ref:
+        if ref and not is_extension:
             reward = int(get_setting("referral_reward_rial", "50000"))
             db.execute("UPDATE users SET balance_rial=balance_rial+? WHERE telegram_id=?",
                        (reward, dict(ref)["referrer_id"]))

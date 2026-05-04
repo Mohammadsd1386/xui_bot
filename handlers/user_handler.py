@@ -33,8 +33,11 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
     uid = update.effective_user.id
+    upsert_user(uid, update.effective_user.username, update.effective_user.full_name)
     user = get_user(uid)
     if not user:
+        await answer(update, "❌ خطا در بارگذاری پروفایل. یک بار /start بزنید.", back_btn("main_menu"),
+                     edit=bool(update.callback_query))
         return
     orders = get_user_orders(uid)
     active = sum(1 for o in orders if o["status"] == "active")
@@ -137,8 +140,10 @@ async def order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_not_banned
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     uid = update.effective_user.id
+    upsert_user(uid, update.effective_user.username, update.effective_user.full_name)
     user = get_user(uid)
     balance = user.get("balance_rial", 0) if user else 0
     from database import get_db as _db
@@ -146,15 +151,27 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txs = db.execute(
             "SELECT * FROM payments WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (uid,)
         ).fetchall()
+        wrs = db.execute(
+            "SELECT type, amount_rial, status, created_at FROM wallet_requests "
+            "WHERE user_id=? ORDER BY created_at DESC LIMIT 5",
+            (uid,),
+        ).fetchall()
     hist = ""
     for t in txs:
         t = dict(t)
         e = "✅" if t["status"] == "confirmed" else "⏳" if t["status"] == "pending" else "❌"
         hist += f"\n{e} {fmt_rial(t['amount_rial'])} — {fmt_date(t['created_at'])}"
+    wr_hist = ""
+    for w in wrs:
+        w = dict(w)
+        lab = "شارژ" if w["type"] == "deposit" else "برداشت"
+        e = "✅" if w["status"] == "approved" else "⏳" if w["status"] == "pending" else "❌"
+        wr_hist += f"\n{e} {lab} {fmt_rial(w['amount_rial'])} — {fmt_date(w['created_at'])}"
     text = (
         f"💳 *کیف پول*\n\n"
         f"💰 موجودی: `{fmt_rial(balance)}`\n\n"
-        f"*آخرین تراکنش‌ها:*{hist or chr(10) + '—'}\n\n"
+        f"*آخرین پرداخت‌ها (خرید):*{hist or chr(10) + '—'}"
+        f"\n\n*درخواست‌های کیف:*{wr_hist or chr(10) + '—'}\n\n"
         f"برای شارژ/برداشت درخواست ثبت کنید:"
     )
     kb = InlineKeyboardMarkup([
@@ -162,7 +179,10 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("➖ درخواست برداشت", callback_data="wallet_withdraw")],
         [InlineKeyboardButton("🔙 بازگشت", callback_data="my_account")]
     ])
-    await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+    if query:
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
 @require_not_banned
@@ -235,7 +255,8 @@ async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_not_banned
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     uid = update.effective_user.id
     bot_info = await context.bot.get_me()
     link = f"https://t.me/{bot_info.username}?start=ref{uid}"
@@ -251,34 +272,45 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 کل پاداش: `{fmt_rial(r['s'] or 0)}`\n\n"
         f"⚡ پاداش پس از اولین خرید دوست شما ثبت می‌شود."
     )
-    await query.edit_message_text(text, reply_markup=back_btn("main_menu"), parse_mode="Markdown")
+    if query:
+        await query.edit_message_text(text, reply_markup=back_btn("main_menu"), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=back_btn("main_menu"), parse_mode="Markdown")
 
 
 @require_not_banned
 async def free_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     uid = update.effective_user.id
 
+    async def _out(msg: str, kb=back_btn("main_menu")):
+        if query:
+            await query.edit_message_text(msg, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg, reply_markup=kb, parse_mode="Markdown")
+
+    if query:
+        await query.answer()
+
     if get_setting("free_test_enabled", "0") != "1":
-        await query.edit_message_text("❌ تست رایگان غیرفعال است.", reply_markup=back_btn("main_menu"))
+        await _out("❌ تست رایگان غیرفعال است.")
         return
 
     user = get_user(uid)
     if user and user.get("free_test_used"):
-        await query.edit_message_text("⚠️ قبلاً از تست رایگان استفاده کرده‌اید.", reply_markup=back_btn("main_menu"))
+        await _out("⚠️ قبلاً از تست رایگان استفاده کرده‌اید.")
         return
 
     panels = get_panels(active_only=True)
     if not panels:
-        await query.edit_message_text("❌ پنلی فعال نیست.", reply_markup=back_btn("main_menu"))
+        await _out("❌ پنلی فعال نیست.")
         return
 
     gb = float(get_setting("free_test_gb", "1"))
     days = int(get_setting("free_test_days", "3"))
     panel = panels[0]
 
-    await query.edit_message_text("⏳ در حال ساخت حساب تست...")
+    await _out("⏳ در حال ساخت حساب تست...")
     try:
         api = await get_api(panel)
         email = make_email(uid, "test")
@@ -297,11 +329,7 @@ async def free_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tr = None
             if panel["type"] == "xui" and cli_uuid:
                 tr = await api.get_client_traffic(cli_uuid)
-            await query.edit_message_text(
-                "✅ تست رایگان فعال شد.\n📩 جزئیات کامل + QR در پیام بعدی ارسال شد.",
-                reply_markup=back_btn("main_menu"),
-                parse_mode="Markdown",
-            )
+            await _out("✅ تست رایگان فعال شد.\n📩 جزئیات کامل + QR در پیام بعدی ارسال شد.")
             await send_activation_to_user(
                 context.bot, uid, refreshed,
                 plan_name="🧪 تست رایگان",
@@ -316,20 +344,24 @@ async def free_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         text = f"❌ خطا: {e}"
 
-    await query.edit_message_text(text, reply_markup=back_btn("main_menu"), parse_mode="Markdown")
+    await _out(text)
 
 
 # ── SUPPORT / TICKETS ─────────────────────────────────────────────────────────
 
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     sup = get_setting("support_username", "")
     text = "📞 *پشتیبانی*\n\n"
     if sup:
         text += f"تماس مستقیم: @{sup}\n\n"
     text += "یا تیکت باز کنید:"
-    await query.edit_message_text(text, reply_markup=support_kb(), parse_mode="Markdown")
+    if query:
+        await query.edit_message_text(text, reply_markup=support_kb(), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=support_kb(), parse_mode="Markdown")
 
 
 async def new_ticket_start(update: Update, context: ContextTypes.DEFAULT_TYPE):

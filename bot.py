@@ -25,7 +25,7 @@ from handlers.shop_handler import (
     extend_start, extend_value, S_EXTEND_VAL, S_CFG_NAME,
 )
 from handlers.admin_handler import (
-    adm_main, adm_users, adm_users_page, adm_user_detail, adm_ban,
+    adm_main, adm_users, adm_users_page, adm_user_detail, adm_user_orders, adm_ban,
     adm_discount_start, adm_discount_val,
     adm_topup_start, adm_topup_val,
     adm_plans, adm_plan_detail, adm_plan_toggle, adm_plan_del,
@@ -37,7 +37,7 @@ from handlers.admin_handler import (
     adm_panel_url, adm_panel_path, adm_panel_user, adm_panel_pass, adm_panel_ib,
     adm_payments, adm_pay_detail, adm_pay_ok, adm_pay_no,
     adm_wallet_reqs, adm_wallet_req_detail, adm_wallet_req_ok, adm_wallet_req_no,
-    adm_sales, adm_settings, adm_setting_start, adm_setting_val,
+    adm_sales, adm_settings, adm_setting_start, adm_setting_val, adm_sync_rates,
     adm_admins, adm_add_admin_start, adm_add_admin_val, adm_del_admin,
     adm_broadcast_start, adm_broadcast_send,
     cancel,
@@ -134,6 +134,10 @@ async def main_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main_menu_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    upsert_user(uid, update.effective_user.username, update.effective_user.full_name)
+    if not await _enforce_channel_join(update, context, uid):
+        return
     txt = (update.message.text or "").strip()
     routes = {
         "🛍 خرید سرویس": shop,
@@ -152,23 +156,30 @@ async def main_menu_text_router(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     ch = get_setting("channel_id").strip()
     if not ch:
+        await query.answer()
         await query.edit_message_text("✅")
         await query.message.reply_text(
             "⬇️ منوی اصلی:",
             reply_markup=main_menu_reply_kb(is_admin(update.effective_user.id))
         )
         return
-    if await _enforce_channel_join(update, context, update.effective_user.id):
+    try:
+        member = await context.bot.get_chat_member(ch, update.effective_user.id)
+        ok = member.status not in ("left", "kicked")
+    except Exception:
+        ok = False
+    if ok:
+        await query.answer()
         await query.edit_message_text("✅ عضویت تأیید شد!")
         await query.message.reply_text(
             "⬇️ منوی اصلی:",
             reply_markup=main_menu_reply_kb(is_admin(update.effective_user.id))
         )
         return
-    await query.answer("❌ هنوز عضو نشده‌اید یا تنظیمات کانال مشکل دارد.", show_alert=True)
+    await query.answer("❌ هنوز عضو نشده‌اید.", show_alert=True)
+    await _enforce_channel_join(update, context, update.effective_user.id)
 
 
 async def setup_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,10 +203,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception:", exc_info=context.error)
 
 
+async def _post_init(application: Application) -> None:
+    import asyncio
+    from services.rates_service import refresh_rates_once, rates_refresh_loop
+    try:
+        await refresh_rates_once()
+    except Exception as e:
+        logger.warning("rates: %s", e)
+    asyncio.create_task(rates_refresh_loop())
+
+
 # ── BUILD ──────────────────────────────────────────────────────────────────────
 
 def build_app(token: str) -> Application:
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_post_init).build()
 
     # ─── Conversations ─────────────────────────────────────────────────────────
 
@@ -391,6 +412,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(adm_users,         pattern="^adm_users$"))
     app.add_handler(CallbackQueryHandler(adm_users,         pattern="^adm_user_search$"))
     app.add_handler(CallbackQueryHandler(adm_users_page,    pattern="^adm_users_page_\\d+$"))
+    app.add_handler(CallbackQueryHandler(adm_user_orders,   pattern="^adm_user_orders_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_user_detail,   pattern="^adm_user_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_ban,           pattern="^adm_(ban|unban)_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_plans,         pattern="^adm_plans$"))
@@ -412,6 +434,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(adm_wallet_req_ok,  pattern="^adm_wr_ok_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_wallet_req_no,  pattern="^adm_wr_no_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_sales,         pattern="^adm_sales$"))
+    app.add_handler(CallbackQueryHandler(adm_sync_rates,    pattern="^adm_sync_rates$"))
     app.add_handler(CallbackQueryHandler(adm_settings,      pattern="^adm_settings$"))
     app.add_handler(CallbackQueryHandler(adm_admins,        pattern="^adm_admins$"))
     app.add_handler(CallbackQueryHandler(adm_del_admin,     pattern="^adm_del_admin_\\d+$"))

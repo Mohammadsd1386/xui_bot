@@ -2,17 +2,18 @@ import logging
 import random
 import re
 import string
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
-from database import get_setting
+from database import get_setting, get_db
 from services.db_service import (
     get_plans, get_plan, get_panel, get_order, create_order, activate_order,
     create_payment, confirm_payment, pay_from_balance, get_admin_ids, get_user
 )
 from services.panel_service import get_api
 from keyboards.menus import plans_kb, payment_kb, back_btn, crypto_paid_kb
-from utils.helpers import fmt_rial, apply_discount, make_email, gateway_label
+from utils.helpers import fmt_rial, apply_discount, make_email, gateway_label, effective_usdt_rate_toman
 from utils.service_delivery import send_activation_to_user
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(query.from_user.id)
     discount = user.get("discount_pct", 0) if user else 0
     final_price = apply_discount(plan["price_rial"], discount)
-    usd = round(final_price / int(get_setting("usd_to_rial", "650000")), 2)
+    usd = round(final_price / effective_usdt_rate_toman(), 2)
 
     text = (
         f"📦 *{plan['name']}*\n\n"
@@ -202,7 +203,7 @@ async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Crypto
-    usd_rate = int(get_setting("usd_to_rial", "650000"))
+    usd_rate = effective_usdt_rate_toman()
     price_usd = round(amount / usd_rate, 4)
 
     wallets = {
@@ -323,6 +324,106 @@ async def receive_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+async def finalize_paid_order(
+    context: ContextTypes.DEFAULT_TYPE,
+    query,
+    order: dict,
+    pay_id: int,
+    tx_hash: str | None = None,
+):
+    """
+    پس از وصول وجه: فعال‌سازی سرویس جدید یا اعمال تمدید/افزایش حجم.
+    برای تأیید ادمین (کریپتو/کارت) از همین تابع استفاده می‌شود.
+    """
+    return await _do_activate(query, context, order, pay_id, tx_hash)
+
+
+async def _finalize_extension_order(context, query_or_ctx, child: dict, pay_id: int, tx_hash: str | None):
+    parent = get_order(child["extends_order_id"])
+    if not parent or parent["user_id"] != child["user_id"]:
+        text = "❌ سفارش والد یافت نشد."
+        if hasattr(query_or_ctx, "edit_message_text"):
+            await query_or_ctx.edit_message_text(text)
+        return False
+    panel = get_panel(parent["panel_id"])
+    if not panel:
+        text = "❌ پنل یافت نشد."
+        if hasattr(query_or_ctx, "edit_message_text"):
+            await query_or_ctx.edit_message_text(text)
+        return False
+
+    extra_gb = float(child.get("gb") or 0)
+    extra_days = int(child.get("days") or 0)
+    uid = child["user_id"]
+
+    try:
+        api = await get_api(panel)
+        if panel["type"] == "xui":
+            cid = parent.get("client_uuid")
+            if not cid:
+                ok, res = False, "شناسه کلاینت روی سفارش ثبت نشده."
+            else:
+                ok, res = await api.renew_client(cid, extra_gb, extra_days)
+        else:
+            uname = (parent.get("client_email") or parent.get("config_name") or "").strip()
+            if not uname:
+                ok, res = False, "نام کاربری مرزبان روی سفارش نیست."
+            else:
+                ok, res = await api.renew_user(uname, extra_gb, extra_days)
+
+        if ok:
+            new_gb = float(parent.get("gb") or 0) + extra_gb
+            pexp = int(parent.get("expires_at") or 0)
+            if extra_days > 0:
+                base = max(pexp, int(time.time())) if pexp else int(time.time())
+                new_exp = base + extra_days * 86400
+            else:
+                new_exp = pexp
+            with get_db() as db:
+                db.execute(
+                    "UPDATE orders SET gb=?, expires_at=? WHERE id=?",
+                    (new_gb, new_exp, parent["id"]),
+                )
+            confirm_payment(pay_id, tx_hash)
+            text = "✅ تمدید / افزایش حجم با موفقیت اعمال شد."
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📦 سرویس‌هایم", callback_data="my_orders"),
+                    InlineKeyboardButton("🏠 منو", callback_data="main_menu"),
+                ]
+            ])
+            if hasattr(query_or_ctx, "edit_message_text"):
+                await query_or_ctx.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+            else:
+                await query_or_ctx.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    uid,
+                    f"✅ سرویس شما به‌روز شد.\n"
+                    f"➕ حجم اضافه: `{extra_gb} GB`\n"
+                    f"➕ روز اضافه: `{extra_days}`",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+            return True
+        text = f"❌ خطا در پنل: {res}"
+    except Exception as e:
+        text = f"❌ خطا: {e}"
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📦 سرویس‌هایم", callback_data="my_orders"),
+            InlineKeyboardButton("🏠 منو", callback_data="main_menu"),
+        ]
+    ])
+    if hasattr(query_or_ctx, "edit_message_text"):
+        await query_or_ctx.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await query_or_ctx.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+    return False
+
+
 async def _zarinpal(query, context, order, amount):
     merchant = get_setting("zarinpal_merchant", "")
     if not merchant:
@@ -334,23 +435,26 @@ async def _zarinpal(query, context, order, amount):
     ok, url_or_err, authority = await zp.request(amount, f"خرید VPN #{order['id']}", callback)
     if ok:
         pay_id = create_payment(query.from_user.id, order["id"], amount, "zarinpal")
-        from database import get_db
         with get_db() as db:
             db.execute("UPDATE payments SET tx_hash=? WHERE id=?", (authority, pay_id))
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 پرداخت آنلاین", url=url_or_err)],
-            [InlineKeyboardButton("🚫 لغو", callback_data="shop")]
+            [InlineKeyboardButton("🚫 لغو", callback_data="shop")],
         ])
         await query.edit_message_text(
             f"🏦 *زرین‌پال*\nمبلغ: `{fmt_rial(amount)}`\n\nروی دکمه زیر کلیک کنید:",
-            reply_markup=kb, parse_mode="Markdown"
+            reply_markup=kb,
+            parse_mode="Markdown",
         )
     else:
         await query.edit_message_text(f"❌ خطای زرین‌پال:\n{url_or_err}", reply_markup=back_btn("shop"))
 
 
-async def _do_activate(query_or_ctx, context, order, pay_id):
+async def _do_activate(query_or_ctx, context, order, pay_id, tx_hash: str | None = None):
     """Create client on panel and finalize order."""
+    if order.get("extends_order_id"):
+        return await _finalize_extension_order(context, query_or_ctx, order, pay_id, tx_hash)
+
     panel = get_panel(order["panel_id"])
     if not panel:
         text = "❌ پنل یافت نشد. با پشتیبانی تماس بگیرید."
@@ -368,7 +472,7 @@ async def _do_activate(query_or_ctx, context, order, pay_id):
 
         if ok:
             activate_order(order["id"], result.get("uuid", email), email, result.get("sub_link", ""))
-            confirm_payment(pay_id)
+            confirm_payment(pay_id, tx_hash)
             sub = result.get("sub_link", "")
             uid = order["user_id"]
             refreshed = get_order(order["id"]) or order
@@ -441,32 +545,58 @@ async def extend_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ عدد مثبت وارد کنید:")
         return S_EXTEND_VAL
 
-    order_id = context.user_data.get("ext_order")
-    ext_type = context.user_data.get("ext_type")
-    from database import get_db
+    parent_id = context.user_data.pop("ext_order", None)
+    ext_type = context.user_data.pop("ext_type", None)
+    uid = update.effective_user.id
+
     with get_db() as db:
-        order = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-        plan = db.execute("SELECT * FROM plans WHERE id=?", (dict(order)["plan_id"],)).fetchone() if order else None
-    if not order or not plan:
-        await update.message.reply_text("❌ خطا.", reply_markup=back_btn("my_orders"))
+        row = db.execute("SELECT * FROM orders WHERE id=?", (parent_id,)).fetchone()
+        order = dict(row) if row else None
+        plan = None
+        if order and order.get("plan_id"):
+            prow = db.execute("SELECT * FROM plans WHERE id=?", (order["plan_id"],)).fetchone()
+            plan = dict(prow) if prow else None
+
+    if not order or order.get("user_id") != uid:
+        await update.message.reply_text("❌ سفارش یافت نشد.", reply_markup=back_btn("my_orders"))
+        return ConversationHandler.END
+    if order.get("status") != "active":
+        await update.message.reply_text("❌ فقط برای سرویس فعال قابل تمدید است.", reply_markup=back_btn("my_orders"))
+        return ConversationHandler.END
+    if not plan:
+        await update.message.reply_text(
+            "❌ برای این سفارش پلن ثبت نشده؛ با پشتیبانی تماس بگیرید.",
+            reply_markup=back_btn("my_orders"),
+        )
         return ConversationHandler.END
 
-    order, plan = dict(order), dict(plan)
     if ext_type == "gb":
         price = int((plan["price_rial"] / plan["gb"]) * val)
+        extra_gb, extra_days = float(val), 0
     else:
         price = int((plan["price_rial"] / plan["days"]) * val)
+        extra_gb, extra_days = 0.0, int(val)
 
-    user = get_user(update.effective_user.id)
+    user = get_user(uid)
     discount = user.get("discount_pct", 0) if user else 0
     final = apply_discount(price, discount)
     balance = user.get("balance_rial", 0) if user else 0
 
-    context.user_data["ext_val"] = val
-    context.user_data["ext_price"] = final
+    cfg = (order.get("config_name") or order.get("client_email") or "").strip() or None
+    child_id = create_order(
+        uid,
+        order["plan_id"],
+        order["panel_id"],
+        extra_gb,
+        extra_days,
+        final,
+        config_name=cfg,
+        extends_order_id=parent_id,
+    )
+
     await update.message.reply_text(
-        f"💰 قیمت: `{fmt_rial(final)}`\n\nروش پرداخت:",
-        reply_markup=payment_kb(order_id, balance),
-        parse_mode="Markdown"
+        f"💰 مبلغ تمدید/افزایش حجم: `{fmt_rial(final)}`\n\nروش پرداخت را انتخاب کنید:",
+        reply_markup=payment_kb(child_id, balance),
+        parse_mode="Markdown",
     )
     return ConversationHandler.END

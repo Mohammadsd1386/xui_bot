@@ -9,7 +9,8 @@ from services.db_service import (
     get_panels, get_panel, add_panel, delete_panel, toggle_panel,
     get_pending_crypto_payments, get_payment, confirm_payment, reject_payment,
     get_sales_stats, get_admins, add_admin, delete_admin, get_all_user_ids,
-    get_user_financial_stats, get_pending_wallet_requests, approve_wallet_request, reject_wallet_request
+    get_user_financial_stats, get_pending_wallet_requests, approve_wallet_request, reject_wallet_request,
+    get_user_orders_admin,
 )
 from services.panel_service import get_api
 from keyboards.menus import (
@@ -110,6 +111,44 @@ async def adm_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 آخرین پرداخت تاییدشده: {fmt_date((last_pay['t'] if last_pay else 0) or 0)}"
     )
     await query.edit_message_text(text, reply_markup=adm_user_detail_kb(uid), parse_mode="Markdown")
+
+
+@require_admin
+async def adm_user_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = int(query.data.split("_")[3])
+    user = get_user(uid)
+    if not user:
+        await query.edit_message_text("❌ کاربر یافت نشد.", reply_markup=back_btn("adm_users"))
+        return
+    orders = get_user_orders_admin(uid)
+    if not orders:
+        await query.edit_message_text("📭 این کاربر سفارشی ندارد.", reply_markup=back_btn(f"adm_user_{uid}"))
+        return
+    lines = [f"📦 *سفارش‌های کاربر* `{uid}`\n"]
+    st_emoji = {"active": "✅", "expired": "⏰", "pending": "⏳", "cancelled": "❌", "merged": "🔗"}
+    for o in orders[:20]:
+        e = st_emoji.get(o["status"], "❓")
+        ext = " (تمدید)" if o.get("extends_order_id") else ""
+        lines.append(
+            f"{e} `#{o['id']}`{ext} {o.get('plan_name') or '—'} — `{fmt_rial(o.get('price_paid', 0))}`"
+        )
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=back_btn(f"adm_user_{uid}"),
+        parse_mode="Markdown",
+    )
+
+
+@require_admin
+async def adm_sync_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    from services.rates_service import refresh_rates_once
+    ok, msg = await refresh_rates_once()
+    icon = "✅" if ok else "⚠️"
+    await query.edit_message_text(f"{icon} {msg}", reply_markup=back_btn("adm_settings"), parse_mode="Markdown")
 
 
 @require_admin
@@ -543,48 +582,22 @@ async def adm_pay_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     pay_id = int(query.data.split("_")[3])
     with get_db() as db:
-        pay = dict(db.execute("SELECT * FROM payments WHERE id=?", (pay_id,)).fetchone())
-        order = dict(db.execute("SELECT * FROM orders WHERE id=?", (pay["order_id"],)).fetchone())
-        panel = dict(db.execute("SELECT * FROM panels WHERE id=?", (order["panel_id"],)).fetchone())
+        prow = db.execute("SELECT * FROM payments WHERE id=?", (pay_id,)).fetchone()
+        pay = dict(prow) if prow else None
+        order = None
+        if pay and pay.get("order_id"):
+            orow = db.execute("SELECT * FROM orders WHERE id=?", (pay["order_id"],)).fetchone()
+            order = dict(orow) if orow else None
+
+    if not pay or not order:
+        await query.edit_message_text("❌ پرداخت یا سفارش یافت نشد.", reply_markup=back_btn("adm_payments"))
+        return
 
     await query.edit_message_text("⏳ در حال فعال‌سازی سرویس...")
-    email = (order.get("config_name") or make_email(order["user_id"], str(order.get("plan_id", "vpn")))).strip()
-    try:
-        api = await get_api(panel)
-        if panel["type"] == "xui":
-            ok, result = await api.add_client(email, order["gb"], order["days"], panel.get("inbound_id", 1))
-        else:
-            ok, result = await api.add_user(email, order["gb"], order["days"])
+    from handlers.shop_handler import finalize_paid_order
 
-        if ok:
-            from services.db_service import activate_order
-            activate_order(order["id"], result.get("uuid", email), email, result.get("sub_link", ""))
-            confirm_payment(pay_id, pay.get("tx_hash"))
-            sub = result.get("sub_link", "")
-            await query.edit_message_text("✅ سرویس فعال شد و پرداخت تأیید شد.",
-                                          reply_markup=back_btn("adm_payments"))
-            refreshed = get_order(order["id"]) or order
-            plan_name = None
-            if refreshed.get("plan_id"):
-                pl = get_plan(refreshed["plan_id"])
-                if pl:
-                    plan_name = pl.get("name")
-            cli_uuid = result.get("uuid", email)
-            tr = None
-            if panel["type"] == "xui" and cli_uuid:
-                tr = await api.get_client_traffic(cli_uuid)
-            try:
-                await send_activation_to_user(
-                    context.bot, order["user_id"], refreshed,
-                    plan_name=plan_name,
-                    sub_link=sub or "",
-                    client_uuid=str(cli_uuid),
-                    traffic=tr,
-                )
-            except Exception:
-                pass
-        else:
-            await query.edit_message_text(f"❌ خطا در پنل: {result}", reply_markup=back_btn("adm_payments"))
+    try:
+        await finalize_paid_order(context, query, order, pay_id, pay.get("tx_hash"))
     except Exception as e:
         await query.edit_message_text(f"❌ خطا: {e}", reply_markup=back_btn("adm_payments"))
 
@@ -712,9 +725,11 @@ async def adm_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def adm_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    ru = int(get_setting("rates_updated_at", "0") or "0")
     text = (
         f"⚙️ *تنظیمات*\n\n"
-        f"💱 نرخ دلار: `{int(get_setting('usd_to_rial','650000')):,}` تومان\n"
+        f"💱 نرخ (USDT/دلار بازار): `{int(get_setting('usd_to_rial','650000')):,}` تومان\n"
+        f"🕒 آخرین به‌روزرسانی خودکار: {fmt_date(ru)}\n"
         f"🎁 پاداش رفرال: `{fmt_rial(int(get_setting('referral_reward_rial','50000')))}`\n"
         f"🧪 تست رایگان: {'✅' if get_setting('free_test_enabled','0')=='1' else '❌'}\n"
         f"📢 جوین اجباری: {'✅' if get_setting('channel_join_required','0')=='1' else '❌'}\n"

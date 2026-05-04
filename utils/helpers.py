@@ -67,3 +67,13 @@ def apply_discount(price: int, pct: int) -> int:
     if pct <= 0:
         return int(price)
     return int(price * (100 - pct) / 100)
+
+
+def effective_usdt_rate_toman() -> int:
+    """تومان به ازای هر USDT (و معادل دلار در محاسبات ربات)."""
+    from database import get_setting
+    raw = get_setting("usdt_to_rial") or get_setting("usd_to_rial", "650000")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 650000
