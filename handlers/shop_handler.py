@@ -7,12 +7,13 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from database import get_setting
 from services.db_service import (
-    get_plans, get_plan, get_panel, create_order, activate_order,
+    get_plans, get_plan, get_panel, get_order, create_order, activate_order,
     create_payment, confirm_payment, pay_from_balance, get_admin_ids, get_user
 )
 from services.panel_service import get_api
 from keyboards.menus import plans_kb, payment_kb, back_btn, crypto_paid_kb
 from utils.helpers import fmt_rial, apply_discount, make_email, gateway_label
+from utils.service_delivery import send_activation_to_user
 
 logger = logging.getLogger(__name__)
 
@@ -333,11 +334,34 @@ async def _do_activate(query_or_ctx, context, order, pay_id):
             activate_order(order["id"], result.get("uuid", email), email, result.get("sub_link", ""))
             confirm_payment(pay_id)
             sub = result.get("sub_link", "")
-            text = (
-                f"🎉 *سرویس فعال شد!*\n\n"
-                f"📦 حجم: `{order['gb']} GB` | ⏱ `{order['days']} روز`\n\n"
-                f"🔗 لینک اشتراک:\n`{sub}`"
+            uid = order["user_id"]
+            refreshed = get_order(order["id"]) or order
+            plan_name = None
+            if refreshed.get("plan_id"):
+                pl = get_plan(refreshed["plan_id"])
+                if pl:
+                    plan_name = pl.get("name")
+            cli_uuid = result.get("uuid", email)
+            tr = None
+            if panel["type"] == "xui" and cli_uuid:
+                tr = await api.get_client_traffic(cli_uuid)
+            text = "✅ سرویس فعال شد.\n📩 جزئیات کامل + QR در پیام بعدی ارسال شد."
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📦 سرویس‌هایم", callback_data="my_orders"),
+                InlineKeyboardButton("🏠 منو", callback_data="main_menu")
+            ]])
+            if hasattr(query_or_ctx, "edit_message_text"):
+                await query_or_ctx.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+            else:
+                await query_or_ctx.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+            await send_activation_to_user(
+                context.bot, uid, refreshed,
+                plan_name=plan_name,
+                sub_link=sub or "",
+                client_uuid=str(cli_uuid),
+                traffic=tr,
             )
+            return
         else:
             text = f"❌ خطا در پنل: {result}"
     except Exception as e:

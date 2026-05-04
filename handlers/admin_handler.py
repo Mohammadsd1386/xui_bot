@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from database import get_db, get_setting, set_setting
 from services.db_service import (
     get_users_page, count_users, get_user, set_discount, add_balance, ban_user,
-    get_plans, get_plan, add_plan, toggle_plan, delete_plan, update_plan_field,
+    get_plans, get_plan, get_order, add_plan, toggle_plan, delete_plan, update_plan_field,
     get_panels, get_panel, add_panel, delete_panel, toggle_panel,
     get_pending_crypto_payments, get_payment, confirm_payment, reject_payment,
     get_sales_stats, get_admins, add_admin, delete_admin, get_all_user_ids,
@@ -22,6 +22,7 @@ from keyboards.menus import (
     adm_admins_kb, confirm_kb, back_btn
 )
 from utils.helpers import fmt_rial, fmt_date, days_left, gateway_label, make_email
+from utils.service_delivery import send_activation_to_user
 from handlers.common import require_admin
 
 logger = logging.getLogger(__name__)
@@ -561,11 +562,23 @@ async def adm_pay_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sub = result.get("sub_link", "")
             await query.edit_message_text("✅ سرویس فعال شد و پرداخت تأیید شد.",
                                           reply_markup=back_btn("adm_payments"))
+            refreshed = get_order(order["id"]) or order
+            plan_name = None
+            if refreshed.get("plan_id"):
+                pl = get_plan(refreshed["plan_id"])
+                if pl:
+                    plan_name = pl.get("name")
+            cli_uuid = result.get("uuid", email)
+            tr = None
+            if panel["type"] == "xui" and cli_uuid:
+                tr = await api.get_client_traffic(cli_uuid)
             try:
-                await context.bot.send_message(
-                    order["user_id"],
-                    f"🎉 *سرویس شما فعال شد!*\n\n🔗 لینک:\n`{sub}`",
-                    parse_mode="Markdown"
+                await send_activation_to_user(
+                    context.bot, order["user_id"], refreshed,
+                    plan_name=plan_name,
+                    sub_link=sub or "",
+                    client_uuid=str(cli_uuid),
+                    traffic=tr,
                 )
             except Exception:
                 pass

@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from database import get_setting, set_setting
 from services.db_service import (
-    upsert_user, get_user, get_user_orders, get_order, get_user_tickets,
+    upsert_user, get_user, get_user_orders, get_order, get_plan, get_user_tickets,
     get_ticket, get_ticket_messages, create_ticket, add_ticket_message,
     get_admin_ids, is_admin, mark_free_test_used, create_order, activate_order,
     get_plans, get_panels, create_wallet_request
@@ -15,6 +15,7 @@ from keyboards.menus import (
     my_tickets_kb, back_btn
 )
 from utils.helpers import fmt_rial, fmt_date, fmt_bytes, days_left, make_email, pct_bar
+from utils.service_delivery import send_activation_to_user
 from handlers.common import require_not_banned, answer
 
 logger = logging.getLogger(__name__)
@@ -291,9 +292,25 @@ async def free_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order_id = create_order(uid, None, panel["id"], gb, days, 0)
             activate_order(order_id, result.get("uuid", email), email, result.get("sub_link", ""))
             sub = result.get("sub_link", "")
-            text = (f"🎉 *تست رایگان فعال شد!*\n\n"
-                    f"📦 حجم: `{gb} GB` | ⏱ مدت: `{days} روز`\n\n"
-                    f"🔗 لینک اشتراک:\n`{sub}`")
+            refreshed = get_order(order_id) or {}
+            cli_uuid = result.get("uuid", email)
+            tr = None
+            if panel["type"] == "xui" and cli_uuid:
+                tr = await api.get_client_traffic(cli_uuid)
+            await query.edit_message_text(
+                "✅ تست رایگان فعال شد.\n📩 جزئیات کامل + QR در پیام بعدی ارسال شد.",
+                reply_markup=back_btn("main_menu"),
+                parse_mode="Markdown",
+            )
+            await send_activation_to_user(
+                context.bot, uid, refreshed,
+                plan_name="🧪 تست رایگان",
+                sub_link=sub or "",
+                client_uuid=str(cli_uuid),
+                traffic=tr,
+                title="تست رایگان فعال شد ✨",
+            )
+            return
         else:
             text = f"❌ خطا در پنل: {result}"
     except Exception as e:
