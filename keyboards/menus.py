@@ -1,4 +1,10 @@
-from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Markup
+from telegram import (
+    InlineKeyboardButton as Btn,
+    InlineKeyboardMarkup as Markup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
+from database import get_setting
 
 
 def _kb(rows):
@@ -24,6 +30,17 @@ def main_menu_kb(is_admin=False):
         rows.append([("⚙️ پنل ادمین", "adm_main")])
     return _kb(rows)
 
+def main_menu_reply_kb(is_admin=False):
+    rows = [
+        [KeyboardButton("🛍 خرید سرویس"), KeyboardButton("👤 حساب کاربری")],
+        [KeyboardButton("📦 سرویس‌های من"), KeyboardButton("💳 کیف پول")],
+        [KeyboardButton("👥 دعوت دوستان"), KeyboardButton("🎫 تست رایگان")],
+        [KeyboardButton("📞 پشتیبانی")],
+    ]
+    if is_admin:
+        rows.append([KeyboardButton("⚙️ پنل ادمین")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
 
 def plans_kb(plans: list):
     rows = []
@@ -36,11 +53,21 @@ def plans_kb(plans: list):
 
 def payment_kb(order_id: int, balance: int = 0):
     rows = []
-    if balance > 0:
+    if balance > 0 and get_setting("pay_balance_enabled", "1") == "1":
         rows.append([(f"👛 کیف پول ({balance:,}ت)", f"pay_balance_{order_id}")])
-    rows.append([("💳 زرین‌پال (ریال)", f"pay_zarinpal_{order_id}")])
-    rows.append([("💎 تتر BEP20", f"pay_usdt_{order_id}"), ("🔵 ترون TRC20", f"pay_tron_{order_id}")])
-    rows.append([("🪙 تون کوین", f"pay_ton_{order_id}")])
+    if get_setting("pay_zarinpal_enabled", "1") == "1":
+        rows.append([("💳 زرین‌پال (ریال)", f"pay_zarinpal_{order_id}")])
+    if get_setting("pay_card2card_enabled", "1") == "1":
+        rows.append([("🏦 کارت به کارت", f"pay_card2card_{order_id}")])
+    crypto_row = []
+    if get_setting("pay_usdt_enabled", "1") == "1":
+        crypto_row.append(("💎 تتر BEP20", f"pay_usdt_{order_id}"))
+    if get_setting("pay_tron_enabled", "1") == "1":
+        crypto_row.append(("🔵 ترون TRC20", f"pay_tron_{order_id}"))
+    if crypto_row:
+        rows.append(crypto_row)
+    if get_setting("pay_ton_enabled", "1") == "1":
+        rows.append([("🪙 تون کوین", f"pay_ton_{order_id}")])
     rows.append([("🚫 لغو", "my_orders")])
     return _kb(rows)
 
@@ -107,6 +134,7 @@ def adm_settings_kb():
     return _kb([
         [("💱 نرخ دلار", "set_usd_rate"), ("🎁 پاداش رفرال", "set_referral")],
         [("🧪 تست رایگان", "set_free_test"), ("📢 کانال اجباری", "set_channel")],
+        [("💳 روش‌های پرداخت", "set_payment_methods"), ("🏦 کارت‌به‌کارت", "set_card_info")],
         [("💎 آدرس تتر BEP20", "set_usdt_addr"), ("🔵 آدرس ترون", "set_tron_addr")],
         [("🪙 آدرس تون", "set_ton_addr"), ("🏦 زرین‌پال", "set_zarinpal")],
         [("📱 یوزر پشتیبانی", "set_support"), ("🤖 نام ربات", "set_bot_name")],
@@ -118,6 +146,20 @@ def adm_free_test_kb():
     return _kb([
         [("✅ فعال کردن", "ft_on"), ("❌ غیرفعال", "ft_off")],
         [("📦 تنظیم حجم", "ft_set_gb"), ("📅 تنظیم روز", "ft_set_days")],
+        [("🔙 بازگشت", "adm_settings")]
+    ])
+
+
+def adm_payment_methods_kb():
+    def s(key: str) -> str:
+        return "✅" if get_setting(key, "1") == "1" else "❌"
+    return _kb([
+        [(f"{s('pay_balance_enabled')} کیف پول", "pay_toggle_balance"),
+         (f"{s('pay_zarinpal_enabled')} زرین‌پال", "pay_toggle_zarinpal")],
+        [(f"{s('pay_card2card_enabled')} کارت‌به‌کارت", "pay_toggle_card2card"),
+         (f"{s('pay_usdt_enabled')} تتر", "pay_toggle_usdt")],
+        [(f"{s('pay_tron_enabled')} ترون", "pay_toggle_tron"),
+         (f"{s('pay_ton_enabled')} تون", "pay_toggle_ton")],
         [("🔙 بازگشت", "adm_settings")]
     ])
 

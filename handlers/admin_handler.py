@@ -14,6 +14,7 @@ from services.db_service import (
 from services.panel_service import get_api
 from keyboards.menus import (
     adm_main_kb, adm_settings_kb, adm_free_test_kb,
+    adm_payment_methods_kb,
     adm_users_kb, adm_user_detail_kb,
     adm_plans_kb, adm_plan_detail_kb, adm_plan_select_panel_kb,
     adm_panels_kb, adm_panel_detail_kb, adm_panel_type_kb,
@@ -716,6 +717,9 @@ async def adm_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💱 نرخ دلار: `{int(get_setting('usd_to_rial','650000')):,}` تومان\n"
         f"🎁 پاداش رفرال: `{fmt_rial(int(get_setting('referral_reward_rial','50000')))}`\n"
         f"🧪 تست رایگان: {'✅' if get_setting('free_test_enabled','0')=='1' else '❌'}\n"
+        f"📢 جوین اجباری: {'✅' if get_setting('channel_join_required','0')=='1' else '❌'}\n"
+        f"🏦 کارت مقصد: `{get_setting('card2card_number') or '—'}`\n"
+        f"👤 صاحب کارت: `{get_setting('card2card_holder') or '—'}`\n"
         f"💎 تتر BEP20: `{get_setting('usdt_bep20_address') or '—'}`\n"
         f"🔵 ترون: `{get_setting('tron_address') or '—'}`\n"
         f"🪙 تون: `{get_setting('ton_address') or '—'}`\n"
@@ -734,6 +738,8 @@ _SETTING_MAP = {
     "set_support":     ("support_username",        "📱 یوزرنیم پشتیبانی (بدون @):"),
     "set_bot_name":    ("bot_name",                "🤖 نام ربات:"),
     "set_channel":     ("channel_id",              "📢 آیدی کانال (مثال @channel):"),
+    "set_card_number": ("card2card_number",        "🏦 شماره کارت مقصد را وارد کنید:"),
+    "set_card_holder": ("card2card_holder",        "👤 نام صاحب کارت را وارد کنید:"),
     "ft_set_gb":       ("free_test_gb",            "📦 حجم تست رایگان (GB):"),
     "ft_set_days":     ("free_test_days",          "📅 مدت تست رایگان (روز):"),
 }
@@ -747,6 +753,63 @@ async def adm_setting_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if key == "set_free_test":
         await query.edit_message_text("🧪 *تست رایگان*", reply_markup=adm_free_test_kb(), parse_mode="Markdown")
+        return ConversationHandler.END
+
+    if key == "set_channel":
+        await query.edit_message_text(
+            "📢 *جوین اجباری کانال*\n\n"
+            "آیدی کانال را بفرستید (مثال: `@channel` یا `-100...`).\n"
+            "برای روشن/خاموش کردن از دکمه‌های پایین استفاده کنید.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ روشن", callback_data="ch_on"),
+                 InlineKeyboardButton("❌ خاموش", callback_data="ch_off")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="adm_settings")]
+            ])
+        )
+        context.user_data["setting_key"] = "channel_id"
+        return S_SET_VAL
+
+    if key == "set_payment_methods":
+        await query.edit_message_text(
+            "💳 *مدیریت روش‌های پرداخت*\nروی هر مورد بزنید تا فعال/غیرفعال شود.",
+            reply_markup=adm_payment_methods_kb(),
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    if key == "set_card_info":
+        await query.edit_message_text(
+            "🏦 *تنظیم کارت‌به‌کارت*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ شماره کارت", callback_data="set_card_number"),
+                 InlineKeyboardButton("👤 نام صاحب کارت", callback_data="set_card_holder")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="adm_settings")]
+            ])
+        )
+        return ConversationHandler.END
+
+    if key == "ch_on":
+        set_setting("channel_join_required", "1")
+        await query.edit_message_text("✅ جوین اجباری فعال شد.", reply_markup=back_btn("adm_settings"))
+        return ConversationHandler.END
+
+    if key == "ch_off":
+        set_setting("channel_join_required", "0")
+        await query.edit_message_text("❌ جوین اجباری غیرفعال شد.", reply_markup=back_btn("adm_settings"))
+        return ConversationHandler.END
+
+    if key.startswith("pay_toggle_"):
+        gw = key.split("pay_toggle_")[1]
+        db_key = f"pay_{gw}_enabled"
+        new_val = "0" if get_setting(db_key, "1") == "1" else "1"
+        set_setting(db_key, new_val)
+        await query.edit_message_text(
+            "💳 *مدیریت روش‌های پرداخت*\nروی هر مورد بزنید تا فعال/غیرفعال شود.",
+            reply_markup=adm_payment_methods_kb(),
+            parse_mode="Markdown"
+        )
         return ConversationHandler.END
 
     if key == "ft_on":

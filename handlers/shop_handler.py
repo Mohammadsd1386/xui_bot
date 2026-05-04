@@ -160,6 +160,9 @@ async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Balance payment
     if gateway == "balance":
+        if get_setting("pay_balance_enabled", "1") != "1":
+            await query.edit_message_text("❌ این روش پرداخت غیرفعال است.", reply_markup=back_btn("shop"))
+            return
         if not pay_from_balance(query.from_user.id, amount):
             await query.edit_message_text("❌ موجودی کیف پول کافی نیست.",
                                           reply_markup=payment_kb(order_id))
@@ -170,7 +173,32 @@ async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ZarinPal
     if gateway == "zarinpal":
+        if get_setting("pay_zarinpal_enabled", "1") != "1":
+            await query.edit_message_text("❌ این روش پرداخت غیرفعال است.", reply_markup=back_btn("shop"))
+            return
         await _zarinpal(query, context, order, amount)
+        return
+
+    # Card to card (manual)
+    if gateway == "card2card":
+        if get_setting("pay_card2card_enabled", "1") != "1":
+            await query.edit_message_text("❌ این روش پرداخت غیرفعال است.", reply_markup=back_btn("shop"))
+            return
+        card_no = get_setting("card2card_number", "")
+        card_holder = get_setting("card2card_holder", "")
+        if not card_no:
+            await query.edit_message_text("❌ شماره کارت هنوز تنظیم نشده است.", reply_markup=back_btn("shop"))
+            return
+        pay_id = create_payment(query.from_user.id, order_id, amount, "card2card")
+        text = (
+            "🏦 *پرداخت کارت‌به‌کارت*\n\n"
+            f"💰 مبلغ: `{fmt_rial(amount)}`\n"
+            f"💳 شماره کارت: `{card_no}`\n"
+            f"👤 صاحب کارت: `{card_holder or '—'}`\n\n"
+            "⚠️ پس از واریز، رسید یا شماره پیگیری را ارسال کنید.\n"
+            f"🆔 شناسه پرداخت: `{pay_id}`"
+        )
+        await query.edit_message_text(text, reply_markup=crypto_paid_kb(pay_id), parse_mode="Markdown")
         return
 
     # Crypto
@@ -185,6 +213,14 @@ async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             round(price_usd / float(get_setting("ton_price_usd", "3.5")), 4)
         ),
     }
+    enabled_map = {
+        "usdt": "pay_usdt_enabled",
+        "tron": "pay_tron_enabled",
+        "ton": "pay_ton_enabled",
+    }
+    if get_setting(enabled_map.get(gateway, ""), "1") != "1":
+        await query.edit_message_text("❌ این روش پرداخت غیرفعال است.", reply_markup=back_btn("shop"))
+        return
     addr, network, coin, amt = wallets.get(gateway, ("", "", "", 0))
     if not addr:
         await query.edit_message_text("❌ این درگاه تنظیم نشده است.", reply_markup=back_btn("shop"))

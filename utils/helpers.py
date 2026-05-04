@@ -36,6 +36,7 @@ def days_left(expires_at) -> str:
 def gateway_label(gw: str) -> str:
     return {
         "zarinpal": "💳 زرین‌پال",
+        "card2card": "🏦 کارت‌به‌کارت",
         "usdt": "💎 تتر BEP20",
         "usdt_bep20": "💎 تتر BEP20",
         "tron": "🔵 ترون TRC20",

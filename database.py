@@ -119,6 +119,14 @@ def init_db():
             ('support_username',''),
             ('channel_id',''),
             ('channel_join_required','0'),
+            ('pay_balance_enabled','1'),
+            ('pay_zarinpal_enabled','1'),
+            ('pay_card2card_enabled','1'),
+            ('pay_usdt_enabled','1'),
+            ('pay_tron_enabled','1'),
+            ('pay_ton_enabled','1'),
+            ('card2card_number',''),
+            ('card2card_holder',''),
             ('bscscan_api_key',''),
             ('zarinpal_callback','https://t.me/your_bot');
         """)
@@ -126,6 +134,18 @@ def init_db():
         cols = {r["name"] for r in db.execute("PRAGMA table_info(orders)").fetchall()}
         if "config_name" not in cols:
             db.execute("ALTER TABLE orders ADD COLUMN config_name TEXT")
+        default_settings = {
+            "pay_balance_enabled": "1",
+            "pay_zarinpal_enabled": "1",
+            "pay_card2card_enabled": "1",
+            "pay_usdt_enabled": "1",
+            "pay_tron_enabled": "1",
+            "pay_ton_enabled": "1",
+            "card2card_number": "",
+            "card2card_holder": "",
+        }
+        for k, v in default_settings.items():
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
     logger.info("DB initialized")
 
 

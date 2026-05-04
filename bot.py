@@ -9,7 +9,7 @@ from telegram.ext import (
 
 from database import init_db, get_setting, set_setting
 from services.db_service import upsert_user, is_admin, get_admin_ids
-from keyboards.menus import main_menu_kb, back_btn
+from keyboards.menus import main_menu_reply_kb
 
 # ── Handler imports ────────────────────────────────────────────────────────────
 from handlers.user_handler import (
@@ -53,6 +53,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _join_link_from_channel(channel_id: str) -> str | None:
+    if not channel_id:
+        return None
+    ch = channel_id.strip()
+    if ch.startswith("@"):
+        return f"https://t.me/{ch.lstrip('@')}"
+    return None
+
+
+async def _enforce_channel_join(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    ch = get_setting("channel_id").strip()
+    if not ch or get_setting("channel_join_required", "0") != "1":
+        return True
+    try:
+        member = await context.bot.get_chat_member(ch, user_id)
+        if member.status in ("left", "kicked"):
+            join_url = _join_link_from_channel(ch)
+            rows = []
+            if join_url:
+                rows.append([InlineKeyboardButton("📢 عضویت در کانال", url=join_url)])
+            rows.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
+            kb = InlineKeyboardMarkup(rows)
+            text = f"⚠️ برای استفاده از ربات باید در کانال عضو شوید:\n{ch}"
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=kb)
+            else:
+                await update.message.reply_text(text, reply_markup=kb)
+            return False
+    except Exception as e:
+        logger.warning("Channel join check failed for %s on %s: %s", user_id, ch, e)
+        # اگر چک کردن وضعیت عضویت شکست خورد، اجازه ادامه نمی‌دهیم تا باگ دور زدن رخ ندهد.
+        await (update.callback_query.message.reply_text if update.callback_query else update.message.reply_text)(
+            "⚠️ بررسی عضویت کانال انجام نشد.\nلطفاً تنظیمات کانال را به ادمین اطلاع دهید."
+        )
+        return False
+    return True
+
 
 # ── START ──────────────────────────────────────────────────────────────────────
 
@@ -71,30 +108,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     upsert_user(user.id, user.username, user.full_name, referrer_id)
 
-    # Channel check
-    ch = get_setting("channel_id")
-    if ch and get_setting("channel_join_required") == "1":
-        try:
-            member = await context.bot.get_chat_member(ch, user.id)
-            if member.status in ("left", "kicked"):
-                ch_name = ch.lstrip("@")
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{ch_name}")],
-                    [InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")],
-                ])
-                await update.message.reply_text(
-                    f"⚠️ برای استفاده از ربات باید در کانال عضو شوید:\n{ch}",
-                    reply_markup=kb
-                )
-                return
-        except Exception:
-            pass
+    if not await _enforce_channel_join(update, context, user.id):
+        return
 
     adm = is_admin(user.id)
     bot_name = get_setting("bot_name", "ربات فروش VPN")
     await update.message.reply_text(
         f"👋 سلام *{user.first_name}*!\n\n🌐 *{bot_name}*\n\nاز منوی زیر استفاده کنید:",
-        reply_markup=main_menu_kb(adm),
+        reply_markup=main_menu_reply_kb(adm),
         parse_mode="Markdown"
     )
 
@@ -107,29 +128,47 @@ async def main_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_name = get_setting("bot_name", "ربات فروش VPN")
     await query.edit_message_text(
         f"🌐 *{bot_name}*\n\nاز منوی زیر استفاده کنید:",
-        reply_markup=main_menu_kb(adm),
         parse_mode="Markdown"
     )
+    await query.message.reply_text("⬇️ منوی اصلی:", reply_markup=main_menu_reply_kb(adm))
+
+
+async def main_menu_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+    routes = {
+        "🛍 خرید سرویس": shop,
+        "👤 حساب کاربری": my_account,
+        "📦 سرویس‌های من": my_orders,
+        "💳 کیف پول": wallet,
+        "👥 دعوت دوستان": referral,
+        "🎫 تست رایگان": free_test,
+        "📞 پشتیبانی": support,
+        "⚙️ پنل ادمین": adm_main,
+    }
+    fn = routes.get(txt)
+    if fn:
+        await fn(update, context)
 
 
 async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    ch = get_setting("channel_id")
+    ch = get_setting("channel_id").strip()
     if not ch:
-        await query.edit_message_text("✅", reply_markup=main_menu_kb(is_admin(update.effective_user.id)))
+        await query.edit_message_text("✅")
+        await query.message.reply_text(
+            "⬇️ منوی اصلی:",
+            reply_markup=main_menu_reply_kb(is_admin(update.effective_user.id))
+        )
         return
-    try:
-        member = await context.bot.get_chat_member(ch, update.effective_user.id)
-        if member.status not in ("left", "kicked"):
-            await query.edit_message_text(
-                "✅ عضویت تأیید شد!",
-                reply_markup=main_menu_kb(is_admin(update.effective_user.id))
-            )
-            return
-    except Exception:
-        pass
-    await query.answer("❌ هنوز عضو نشده‌اید.", show_alert=True)
+    if await _enforce_channel_join(update, context, update.effective_user.id):
+        await query.edit_message_text("✅ عضویت تأیید شد!")
+        await query.message.reply_text(
+            "⬇️ منوی اصلی:",
+            reply_markup=main_menu_reply_kb(is_admin(update.effective_user.id))
+        )
+        return
+    await query.answer("❌ هنوز عضو نشده‌اید یا تنظیمات کانال مشکل دارد.", show_alert=True)
 
 
 async def setup_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -210,6 +249,9 @@ def build_app(token: str) -> Application:
             adm_setting_start,
             pattern="^(set_usd_rate|set_referral|set_usdt_addr|set_tron_addr|set_ton_addr"
                     "|set_zarinpal|set_support|set_bot_name|set_channel"
+                    "|set_card_number|set_card_holder|set_card_info|set_payment_methods"
+                    "|ch_on|ch_off|pay_toggle_balance|pay_toggle_zarinpal|pay_toggle_card2card"
+                    "|pay_toggle_usdt|pay_toggle_tron|pay_toggle_ton"
                     "|set_free_test|ft_on|ft_off|ft_set_gb|ft_set_days)$"
         )],
         states={
@@ -325,7 +367,14 @@ def build_app(token: str) -> Application:
 
     # User
     app.add_handler(CallbackQueryHandler(shop,          pattern="^shop$"))
-    app.add_handler(CallbackQueryHandler(pay_handler,   pattern="^pay_(balance|zarinpal|usdt|tron|ton)_\\d+$"))
+    app.add_handler(CallbackQueryHandler(pay_handler,   pattern="^pay_(balance|zarinpal|card2card|usdt|tron|ton)_\\d+$"))
+    # Main menu buttons (reply keyboard)
+    menu_text_filter = (
+        filters.Regex(r"^(🛍 خرید سرویس|👤 حساب کاربری|📦 سرویس‌های من|💳 کیف پول|👥 دعوت دوستان|🎫 تست رایگان|📞 پشتیبانی|⚙️ پنل ادمین)$")
+        & ~filters.COMMAND
+    )
+    app.add_handler(MessageHandler(menu_text_filter, main_menu_text_router))
+
     app.add_handler(CallbackQueryHandler(crypto_paid,   pattern="^crypto_paid_\\d+$"))
     app.add_handler(CallbackQueryHandler(my_account,    pattern="^my_account$"))
     app.add_handler(CallbackQueryHandler(my_orders,     pattern="^my_orders$"))

@@ -1,12 +1,15 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.db_service import is_admin, get_user
+from services.db_service import is_admin, get_user, upsert_user
 
 
 def require_admin(func):
     """Decorator: only admins can use this."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        tg_user = update.effective_user
+        uid = tg_user.id
+        # بعضی کاربران بدون /start مستقیم وارد جریان می‌شوند؛ رکورد را تضمین می‌کنیم.
+        upsert_user(uid, tg_user.username, tg_user.full_name)
         if not is_admin(uid):
             if update.callback_query:
                 await update.callback_query.answer("⛔ دسترسی ندارید.", show_alert=True)
@@ -21,7 +24,9 @@ def require_admin(func):
 def require_not_banned(func):
     """Decorator: blocked users cannot use bot."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        tg_user = update.effective_user
+        uid = tg_user.id
+        upsert_user(uid, tg_user.username, tg_user.full_name)
         user = get_user(uid)
         if user and user.get("is_banned"):
             if update.callback_query:
