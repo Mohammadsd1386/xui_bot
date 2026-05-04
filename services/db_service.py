@@ -115,6 +115,10 @@ def add_panel(name, ptype, url, path, username, password, inbound_id) -> int:
 
 def delete_panel(panel_id: int):
     with get_db() as db:
+        used_plan = db.execute("SELECT COUNT(*) as c FROM plans WHERE panel_id=?", (panel_id,)).fetchone()["c"]
+        used_order = db.execute("SELECT COUNT(*) as c FROM orders WHERE panel_id=?", (panel_id,)).fetchone()["c"]
+        if used_plan > 0 or used_order > 0:
+            raise ValueError("این پنل در پلن‌ها/سفارش‌ها استفاده شده و قابل حذف نیست.")
         db.execute("DELETE FROM panels WHERE id=?", (panel_id,))
 
 
@@ -174,12 +178,12 @@ def update_plan_field(plan_id: int, field: str, value):
 
 # ── ORDERS ────────────────────────────────────────────────────────────────────
 
-def create_order(user_id, plan_id, panel_id, gb, days, price_rial, currency="rial") -> int:
+def create_order(user_id, plan_id, panel_id, gb, days, price_rial, currency="rial", config_name: str = None) -> int:
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO orders(user_id,plan_id,panel_id,gb,days,price_paid,currency,status) "
-            "VALUES(?,?,?,?,?,?,'rial','pending')",
-            (user_id, plan_id, panel_id, gb, days, price_rial)
+            "INSERT INTO orders(user_id,plan_id,panel_id,gb,days,price_paid,currency,status,config_name) "
+            "VALUES(?,?,?,?,?,?,'rial','pending',?)",
+            (user_id, plan_id, panel_id, gb, days, price_rial, config_name)
         )
         return cur.lastrowid
 
@@ -312,6 +316,93 @@ def get_sales_stats() -> dict:
             "month_rial": month["t"] or 0,
             "by_gateway": [dict(r) for r in gateways]
         }
+
+
+def get_user_financial_stats(user_id: int) -> dict:
+    with get_db() as db:
+        bought = db.execute(
+            "SELECT COUNT(*) as c, SUM(price_paid) as s, SUM(gb) as g FROM orders "
+            "WHERE user_id=? AND status!='cancelled'",
+            (user_id,)
+        ).fetchone()
+        paid = db.execute(
+            "SELECT SUM(amount_rial) as s FROM payments WHERE user_id=? AND status='confirmed'",
+            (user_id,)
+        ).fetchone()
+        dep = db.execute(
+            "SELECT SUM(amount_rial) as s FROM wallet_requests WHERE user_id=? AND type='deposit' AND status='approved'",
+            (user_id,)
+        ).fetchone()
+        wd = db.execute(
+            "SELECT SUM(amount_rial) as s FROM wallet_requests WHERE user_id=? AND type='withdraw' AND status='approved'",
+            (user_id,)
+        ).fetchone()
+    return {
+        "orders_count": bought["c"] or 0,
+        "total_buy_rial": bought["s"] or 0,
+        "total_gb": bought["g"] or 0,
+        "total_paid_rial": paid["s"] or 0,
+        "wallet_deposit_rial": dep["s"] or 0,
+        "wallet_withdraw_rial": wd["s"] or 0,
+    }
+
+
+def create_wallet_request(user_id: int, req_type: str, amount_rial: int, note: str = "") -> int:
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO wallet_requests(user_id,type,amount_rial,note) VALUES(?,?,?,?)",
+            (user_id, req_type, amount_rial, note)
+        )
+        return cur.lastrowid
+
+
+def get_pending_wallet_requests() -> list:
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT wr.*, u.username, u.full_name FROM wallet_requests wr "
+            "JOIN users u ON u.telegram_id=wr.user_id "
+            "WHERE wr.status='pending' ORDER BY wr.created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def approve_wallet_request(req_id: int, admin_id: int) -> dict | None:
+    with get_db() as db:
+        row = db.execute("SELECT * FROM wallet_requests WHERE id=? AND status='pending'", (req_id,)).fetchone()
+        if not row:
+            return None
+        req = dict(row)
+        if req["type"] == "deposit":
+            db.execute(
+                "UPDATE users SET balance_rial=balance_rial+? WHERE telegram_id=?",
+                (req["amount_rial"], req["user_id"])
+            )
+        else:
+            u = db.execute("SELECT balance_rial FROM users WHERE telegram_id=?", (req["user_id"],)).fetchone()
+            if not u or u["balance_rial"] < req["amount_rial"]:
+                return {"error": "موجودی کاربر برای برداشت کافی نیست."}
+            db.execute(
+                "UPDATE users SET balance_rial=balance_rial-? WHERE telegram_id=?",
+                (req["amount_rial"], req["user_id"])
+            )
+        db.execute(
+            "UPDATE wallet_requests SET status='approved', handled_at=strftime('%s','now'), handled_by=? WHERE id=?",
+            (admin_id, req_id)
+        )
+        return req
+
+
+def reject_wallet_request(req_id: int, admin_id: int) -> dict | None:
+    with get_db() as db:
+        row = db.execute("SELECT * FROM wallet_requests WHERE id=? AND status='pending'", (req_id,)).fetchone()
+        if not row:
+            return None
+        req = dict(row)
+        db.execute(
+            "UPDATE wallet_requests SET status='rejected', handled_at=strftime('%s','now'), handled_by=? WHERE id=?",
+            (admin_id, req_id)
+        )
+        return req
 
 
 # ── ADMINS ────────────────────────────────────────────────────────────────────

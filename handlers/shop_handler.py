@@ -1,4 +1,7 @@
 import logging
+import random
+import re
+import string
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -14,6 +17,21 @@ from utils.helpers import fmt_rial, apply_discount, make_email, gateway_label
 logger = logging.getLogger(__name__)
 
 S_EXTEND_VAL = 400
+S_CFG_NAME = 401
+
+
+def _build_config_name(user_text: str | None, fallback: str) -> str:
+    base = (user_text or "").strip()
+    if not base:
+        return fallback
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", base)[:16]
+    if not cleaned:
+        return fallback
+    return cleaned
+
+
+def _rand_suffix(length: int = 4) -> str:
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
 async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,13 +73,66 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"🎁 تخفیف `{discount}%` → قیمت نهایی: `{fmt_rial(final_price)}`\n"
     text += f"💱 معادل: `{usd} USDT`\n\n💳 روش پرداخت را انتخاب کنید:"
 
-    order_id = create_order(
-        query.from_user.id, plan_id, plan["panel_id"],
-        plan["gb"], plan["days"], final_price
+    context.user_data["pending_plan"] = {
+        "plan_id": plan_id,
+        "panel_id": plan["panel_id"],
+        "gb": plan["gb"],
+        "days": plan["days"],
+        "final_price": final_price,
+        "preview_text": text,
+    }
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎲 نام رندوم", callback_data="cfg_random")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="shop")]
+    ])
+    await query.edit_message_text(
+        f"{text}\n\n🧾 نام کانفیگ را بفرستید (اختیاری).\n"
+        f"اگر نام ندهید، خودکار نام رندوم ساخته می‌شود.",
+        reply_markup=kb,
+        parse_mode="Markdown"
     )
-    context.user_data["pending_order"] = order_id
+    return S_CFG_NAME
+
+
+async def config_name_random(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    return await _create_order_with_name(update, context, "")
+
+
+async def config_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _create_order_with_name(update, context, (update.message.text or "").strip())
+
+
+async def _create_order_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_name: str):
+    pending = context.user_data.pop("pending_plan", None)
+    if not pending:
+        if update.callback_query:
+            await update.callback_query.edit_message_text("❌ جلسه خرید منقضی شده.", reply_markup=back_btn("shop"))
+        else:
+            await update.message.reply_text("❌ جلسه خرید منقضی شده.", reply_markup=back_btn("shop"))
+        return ConversationHandler.END
+    uid = update.effective_user.id
+    fallback = f"u{uid}-{_rand_suffix()}"
+    config_name = _build_config_name(raw_name, fallback)
+    if raw_name:
+        config_name = f"{config_name}-{_rand_suffix(3)}"
+    user = get_user(uid)
+    order_id = create_order(
+        uid, pending["plan_id"], pending["panel_id"], pending["gb"], pending["days"],
+        pending["final_price"], config_name=config_name
+    )
     balance = user.get("balance_rial", 0) if user else 0
-    await query.edit_message_text(text, reply_markup=payment_kb(order_id, balance), parse_mode="Markdown")
+    text = (
+        f"{pending['preview_text']}\n"
+        f"🏷 نام کانفیگ: `{config_name}`\n\n"
+        f"💳 روش پرداخت را انتخاب کنید:"
+    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=payment_kb(order_id, balance), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=payment_kb(order_id, balance), parse_mode="Markdown")
+    return ConversationHandler.END
 
 
 async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -250,7 +321,7 @@ async def _do_activate(query_or_ctx, context, order, pay_id):
             await query_or_ctx.edit_message_text(text)
         return
 
-    email = make_email(order["user_id"], str(order.get("plan_id", "vpn")))
+    email = _build_config_name(order.get("config_name"), make_email(order["user_id"], str(order.get("plan_id", "vpn"))))
     try:
         api = await get_api(panel)
         if panel["type"] == "xui":

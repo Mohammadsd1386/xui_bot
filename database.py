@@ -72,6 +72,17 @@ def init_db():
             created_at INTEGER DEFAULT (strftime('%s','now')),
             confirmed_at INTEGER
         );
+        CREATE TABLE IF NOT EXISTS wallet_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('deposit','withdraw')),
+            amount_rial INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+            note TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now')),
+            handled_at INTEGER,
+            handled_by INTEGER
+        );
         CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             referrer_id INTEGER NOT NULL, referred_id INTEGER NOT NULL,
@@ -111,6 +122,10 @@ def init_db():
             ('bscscan_api_key',''),
             ('zarinpal_callback','https://t.me/your_bot');
         """)
+        # Lightweight migrations for existing DBs
+        cols = {r["name"] for r in db.execute("PRAGMA table_info(orders)").fetchall()}
+        if "config_name" not in cols:
+            db.execute("ALTER TABLE orders ADD COLUMN config_name TEXT")
     logger.info("DB initialized")
 
 

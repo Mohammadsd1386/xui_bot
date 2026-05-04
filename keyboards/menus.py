@@ -96,7 +96,8 @@ def adm_main_kb():
     return _kb([
         [("👥 کاربران", "adm_users"), ("📦 پلن‌ها", "adm_plans")],
         [("🖥 پنل‌ها", "adm_panels"), ("📊 گزارش فروش", "adm_sales")],
-        [("💳 پرداخت‌های انتظار", "adm_payments"), ("⚙️ تنظیمات", "adm_settings")],
+        [("💳 پرداخت‌های انتظار", "adm_payments"), ("👛 درخواست‌های کیف", "adm_wallet_reqs")],
+        [("⚙️ تنظیمات", "adm_settings")],
         [("👨‍💼 مدیریت ادمین‌ها", "adm_admins"), ("📢 ارسال همگانی", "adm_broadcast")],
         [("🔙 منوی اصلی", "main_menu")]
     ])
@@ -200,6 +201,23 @@ def adm_payments_kb(payments: list):
         rows.append([(f"💳 {name} | {int(p['amount_rial']):,}ت", f"adm_pay_{p['id']}")])
     rows.append([("🔙 بازگشت", "adm_main")])
     return _kb(rows)
+
+
+def adm_wallet_reqs_kb(reqs: list):
+    rows = []
+    for r in reqs[:15]:
+        name = r.get("full_name") or r.get("username") or str(r["user_id"])
+        typ = "➕ شارژ" if r["type"] == "deposit" else "➖ برداشت"
+        rows.append([(f"{typ} | {name} | {int(r['amount_rial']):,}ت", f"adm_wr_{r['id']}")])
+    rows.append([("🔙 بازگشت", "adm_main")])
+    return _kb(rows)
+
+
+def adm_wallet_req_detail_kb(req_id: int):
+    return _kb([
+        [("✅ تایید", f"adm_wr_ok_{req_id}"), ("❌ رد", f"adm_wr_no_{req_id}")],
+        [("🔙 بازگشت", "adm_wallet_reqs")]
+    ])
 
 
 def adm_pay_detail_kb(pay_id: int):

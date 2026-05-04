@@ -7,7 +7,7 @@ from services.db_service import (
     upsert_user, get_user, get_user_orders, get_order, get_user_tickets,
     get_ticket, get_ticket_messages, create_ticket, add_ticket_message,
     get_admin_ids, is_admin, mark_free_test_used, create_order, activate_order,
-    get_plans, get_panels
+    get_plans, get_panels, create_wallet_request
 )
 from services.panel_service import get_api
 from keyboards.menus import (
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 S_TICKET_SUBJECT = 300
 S_TICKET_MSG = 301
 S_TICKET_REPLY = 302
+S_WALLET_REQ = 303
 
 
 @require_not_banned
@@ -86,6 +87,7 @@ async def order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     traffic_text = ""
+    last_online_text = "—"
     if order["status"] == "active" and order.get("client_uuid") and order.get("panel_id"):
         try:
             from services.db_service import get_panel
@@ -97,6 +99,9 @@ async def order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     used = tr["up"] + tr["down"]
                     bar = pct_bar(used, tr["total"])
                     traffic_text = f"\n\n📊 مصرف: `{fmt_bytes(used)}` / `{fmt_bytes(tr['total'])}`\n`{bar}`"
+                    lo = int((tr.get("last_online") or 0) / 1000)
+                    if lo > 0:
+                        last_online_text = fmt_date(lo)
         except Exception:
             pass
 
@@ -104,10 +109,12 @@ async def order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"{e} *سرویس #{order_id}*\n\n"
         f"📦 پلن: `{order.get('plan_name') or '—'}`\n"
+        f"🏷 نام کانفیگ: `{order.get('config_name') or order.get('client_email') or '—'}`\n"
         f"💾 حجم: `{order.get('gb', 0)} GB`\n"
         f"📅 مدت: `{order.get('days', 0)} روز`\n"
         f"⏰ انقضا: {days_left(order.get('expires_at', 0))}\n"
-        f"💰 پرداخت: `{fmt_rial(order.get('price_paid', 0))}`"
+        f"💰 پرداخت: `{fmt_rial(order.get('price_paid', 0))}`\n"
+        f"🕒 آخرین اتصال: `{last_online_text}`"
         f"{traffic_text}"
     )
     if order.get("sub_link"):
@@ -118,6 +125,12 @@ async def order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=order_detail_kb(order_id, order["status"] == "active"),
         parse_mode="Markdown"
     )
+    if order.get("sub_link"):
+        qr = f"https://api.qrserver.com/v1/create-qr-code/?size=512x512&data={order['sub_link']}"
+        try:
+            await query.message.reply_photo(qr, caption="📱 QR Code کانفیگ شما")
+        except Exception:
+            pass
 
 
 @require_not_banned
@@ -137,8 +150,85 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = dict(t)
         e = "✅" if t["status"] == "confirmed" else "⏳" if t["status"] == "pending" else "❌"
         hist += f"\n{e} {fmt_rial(t['amount_rial'])} — {fmt_date(t['created_at'])}"
-    text = f"💳 *کیف پول*\n\n💰 موجودی: `{fmt_rial(balance)}`\n\n*آخرین تراکنش‌ها:*{hist or chr(10) + '—'}"
-    await query.edit_message_text(text, reply_markup=back_btn("my_account"), parse_mode="Markdown")
+    text = (
+        f"💳 *کیف پول*\n\n"
+        f"💰 موجودی: `{fmt_rial(balance)}`\n\n"
+        f"*آخرین تراکنش‌ها:*{hist or chr(10) + '—'}\n\n"
+        f"برای شارژ/برداشت درخواست ثبت کنید:"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ درخواست شارژ", callback_data="wallet_deposit"),
+         InlineKeyboardButton("➖ درخواست برداشت", callback_data="wallet_withdraw")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="my_account")]
+    ])
+    await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@require_not_banned
+async def wallet_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["wallet_req_type"] = "deposit"
+    await query.edit_message_text(
+        "➕ مبلغ شارژ درخواستی را به تومان وارد کنید:",
+        reply_markup=back_btn("wallet")
+    )
+    return S_WALLET_REQ
+
+
+@require_not_banned
+async def wallet_withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["wallet_req_type"] = "withdraw"
+    await query.edit_message_text(
+        "➖ مبلغ برداشت درخواستی را به تومان وارد کنید:",
+        reply_markup=back_btn("wallet")
+    )
+    return S_WALLET_REQ
+
+
+async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    req_type = context.user_data.pop("wallet_req_type", "")
+    if req_type not in ("deposit", "withdraw"):
+        await update.message.reply_text("❌ درخواست منقضی شده. دوباره از بخش کیف پول اقدام کنید.")
+        return ConversationHandler.END
+    try:
+        amount = int((update.message.text or "").strip().replace(",", ""))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ مبلغ معتبر وارد کنید:")
+        context.user_data["wallet_req_type"] = req_type
+        return S_WALLET_REQ
+    uid = update.effective_user.id
+    req_id = create_wallet_request(uid, req_type, amount)
+    action_title = "شارژ" if req_type == "deposit" else "برداشت"
+    await update.message.reply_text(
+        f"✅ درخواست {action_title} ثبت شد.\n"
+        f"🆔 شناسه: `{req_id}`\n"
+        f"💰 مبلغ: `{fmt_rial(amount)}`\n"
+        f"پس از تایید ادمین انجام می‌شود.",
+        parse_mode="Markdown",
+        reply_markup=back_btn("wallet")
+    )
+    from services.db_service import get_admin_ids
+    for aid in get_admin_ids():
+        try:
+            await context.bot.send_message(
+                aid,
+                f"👛 درخواست کیف پول جدید\n"
+                f"🆔 `{req_id}` | کاربر `{uid}`\n"
+                f"نوع: {'شارژ' if req_type == 'deposit' else 'برداشت'}\n"
+                f"مبلغ: {fmt_rial(amount)}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("مشاهده", callback_data=f"adm_wr_{req_id}")
+                ]])
+            )
+        except Exception:
+            pass
+    return ConversationHandler.END
 
 
 @require_not_banned

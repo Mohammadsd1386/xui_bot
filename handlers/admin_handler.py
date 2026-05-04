@@ -8,7 +8,8 @@ from services.db_service import (
     get_plans, get_plan, add_plan, toggle_plan, delete_plan, update_plan_field,
     get_panels, get_panel, add_panel, delete_panel, toggle_panel,
     get_pending_crypto_payments, get_payment, confirm_payment, reject_payment,
-    get_sales_stats, get_admins, add_admin, delete_admin, get_all_user_ids
+    get_sales_stats, get_admins, add_admin, delete_admin, get_all_user_ids,
+    get_user_financial_stats, get_pending_wallet_requests, approve_wallet_request, reject_wallet_request
 )
 from services.panel_service import get_api
 from keyboards.menus import (
@@ -17,6 +18,7 @@ from keyboards.menus import (
     adm_plans_kb, adm_plan_detail_kb, adm_plan_select_panel_kb,
     adm_panels_kb, adm_panel_detail_kb, adm_panel_type_kb,
     adm_payments_kb, adm_pay_detail_kb,
+    adm_wallet_reqs_kb, adm_wallet_req_detail_kb,
     adm_admins_kb, confirm_kb, back_btn
 )
 from utils.helpers import fmt_rial, fmt_date, days_left, gateway_label, make_email
@@ -83,22 +85,27 @@ async def adm_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await query.edit_message_text("❌ کاربر یافت نشد.", reply_markup=back_btn("adm_users"))
         return
+    st = get_user_financial_stats(uid)
     with get_db() as db:
-        spent = db.execute(
-            "SELECT SUM(amount_rial) as s FROM payments WHERE user_id=? AND status='confirmed'", (uid,)
+        last_pay = db.execute(
+            "SELECT MAX(confirmed_at) as t FROM payments WHERE user_id=? AND status='confirmed'", (uid,)
         ).fetchone()
-        orders_cnt = db.execute("SELECT COUNT(*) as c FROM orders WHERE user_id=?", (uid,)).fetchone()
     text = (
         f"👤 *اطلاعات کاربر*\n\n"
         f"🆔 آیدی: `{uid}`\n"
         f"👤 نام: {user.get('full_name') or '—'}\n"
         f"🔖 یوزرنیم: @{user.get('username') or '—'}\n"
-        f"📦 سفارش‌ها: `{orders_cnt['c']}`\n"
-        f"💰 کل خرید: `{fmt_rial(spent['s'] or 0)}`\n"
+        f"📦 سفارش‌ها: `{st['orders_count']}`\n"
+        f"💳 مجموع پرداخت تاییدشده: `{fmt_rial(st['total_paid_rial'])}`\n"
+        f"🛍 مجموع خرید: `{fmt_rial(st['total_buy_rial'])}`\n"
+        f"💾 مجموع حجم خریداری‌شده: `{round(st['total_gb'], 2)} GB`\n"
+        f"➕ شارژ کیف تاییدشده: `{fmt_rial(st['wallet_deposit_rial'])}`\n"
+        f"➖ برداشت کیف تاییدشده: `{fmt_rial(st['wallet_withdraw_rial'])}`\n"
         f"👛 موجودی: `{fmt_rial(user.get('balance_rial', 0))}`\n"
         f"🎁 تخفیف: `{user.get('discount_pct', 0)}%`\n"
         f"🚫 مسدود: {'بله' if user.get('is_banned') else 'خیر'}\n"
-        f"📅 عضویت: {fmt_date(user.get('created_at', 0))}"
+        f"📅 عضویت: {fmt_date(user.get('created_at', 0))}\n"
+        f"🕒 آخرین پرداخت تاییدشده: {fmt_date((last_pay['t'] if last_pay else 0) or 0)}"
     )
     await query.edit_message_text(text, reply_markup=adm_user_detail_kb(uid), parse_mode="Markdown")
 
@@ -344,7 +351,11 @@ async def adm_panel_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     panel_id = int(query.data.split("_")[3])
-    delete_panel(panel_id)
+    try:
+        delete_panel(panel_id)
+    except ValueError as e:
+        await query.edit_message_text(f"❌ {e}", reply_markup=back_btn("adm_panels"))
+        return
     await query.edit_message_text("✅ پنل حذف شد.", reply_markup=back_btn("adm_panels"))
 
 
@@ -535,7 +546,7 @@ async def adm_pay_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = dict(db.execute("SELECT * FROM panels WHERE id=?", (order["panel_id"],)).fetchone())
 
     await query.edit_message_text("⏳ در حال فعال‌سازی سرویس...")
-    email = make_email(order["user_id"], str(order.get("plan_id", "vpn")))
+    email = (order.get("config_name") or make_email(order["user_id"], str(order.get("plan_id", "vpn")))).strip()
     try:
         api = await get_api(panel)
         if panel["type"] == "xui":
@@ -581,6 +592,84 @@ async def adm_pay_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+
+
+@require_admin
+async def adm_wallet_reqs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    reqs = get_pending_wallet_requests()
+    if not reqs:
+        await query.edit_message_text("✅ درخواست کیف پولی در انتظار نیست.", reply_markup=back_btn("adm_main"))
+        return
+    await query.edit_message_text(
+        f"👛 *درخواست‌های کیف پول* ({len(reqs)} مورد)",
+        reply_markup=adm_wallet_reqs_kb(reqs),
+        parse_mode="Markdown"
+    )
+
+
+@require_admin
+async def adm_wallet_req_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    req_id = int(query.data.split("_")[2])
+    reqs = get_pending_wallet_requests()
+    req = next((r for r in reqs if r["id"] == req_id), None)
+    if not req:
+        await query.edit_message_text("❌ درخواست یافت نشد یا رسیدگی شده است.", reply_markup=back_btn("adm_wallet_reqs"))
+        return
+    typ = "شارژ کیف پول" if req["type"] == "deposit" else "برداشت از کیف پول"
+    text = (
+        f"👛 *درخواست #{req_id}*\n\n"
+        f"نوع: `{typ}`\n"
+        f"کاربر: `{req['user_id']}` - {req.get('full_name') or '—'}\n"
+        f"مبلغ: `{fmt_rial(req['amount_rial'])}`\n"
+        f"توضیح: {req.get('note') or '—'}\n"
+        f"زمان: {fmt_date(req['created_at'])}"
+    )
+    await query.edit_message_text(text, reply_markup=adm_wallet_req_detail_kb(req_id), parse_mode="Markdown")
+
+
+@require_admin
+async def adm_wallet_req_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    req_id = int(query.data.split("_")[3])
+    res = approve_wallet_request(req_id, update.effective_user.id)
+    if not res:
+        await query.edit_message_text("❌ درخواست معتبر نیست.", reply_markup=back_btn("adm_wallet_reqs"))
+        return
+    if res.get("error"):
+        await query.edit_message_text(f"❌ {res['error']}", reply_markup=back_btn("adm_wallet_reqs"))
+        return
+    await query.edit_message_text("✅ درخواست کیف پول تایید شد.", reply_markup=back_btn("adm_wallet_reqs"))
+    try:
+        await context.bot.send_message(
+            res["user_id"],
+            f"✅ درخواست کیف پول شما تایید شد.\n💰 مبلغ: {fmt_rial(res['amount_rial'])}"
+        )
+    except Exception:
+        pass
+
+
+@require_admin
+async def adm_wallet_req_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    req_id = int(query.data.split("_")[3])
+    res = reject_wallet_request(req_id, update.effective_user.id)
+    if not res:
+        await query.edit_message_text("❌ درخواست معتبر نیست.", reply_markup=back_btn("adm_wallet_reqs"))
+        return
+    await query.edit_message_text("❌ درخواست کیف پول رد شد.", reply_markup=back_btn("adm_wallet_reqs"))
+    try:
+        await context.bot.send_message(
+            res["user_id"],
+            f"❌ درخواست کیف پول شما رد شد.\n💰 مبلغ: {fmt_rial(res['amount_rial'])}"
+        )
+    except Exception:
+        pass
 
 
 # ── SALES ─────────────────────────────────────────────────────────────────────

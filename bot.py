@@ -1,5 +1,6 @@
 import logging
 import sys
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -16,11 +17,12 @@ from handlers.user_handler import (
     support, new_ticket_start, ticket_subject, ticket_message,
     my_tickets, ticket_view,
     admin_ticket_reply_start, admin_ticket_reply_send,
-    S_TICKET_SUBJECT, S_TICKET_MSG, S_TICKET_REPLY,
+    wallet_deposit_start, wallet_withdraw_start, wallet_req_amount,
+    S_TICKET_SUBJECT, S_TICKET_MSG, S_TICKET_REPLY, S_WALLET_REQ,
 )
 from handlers.shop_handler import (
-    shop, plan_selected, pay_handler, crypto_paid, receive_hash,
-    extend_start, extend_value, S_EXTEND_VAL,
+    shop, plan_selected, config_name_input, config_name_random, pay_handler, crypto_paid, receive_hash,
+    extend_start, extend_value, S_EXTEND_VAL, S_CFG_NAME,
 )
 from handlers.admin_handler import (
     adm_main, adm_users, adm_users_page, adm_user_detail, adm_ban,
@@ -34,6 +36,7 @@ from handlers.admin_handler import (
     adm_panel_add_start, adm_panel_name, adm_panel_type_cb,
     adm_panel_url, adm_panel_path, adm_panel_user, adm_panel_pass, adm_panel_ib,
     adm_payments, adm_pay_detail, adm_pay_ok, adm_pay_no,
+    adm_wallet_reqs, adm_wallet_req_detail, adm_wallet_req_ok, adm_wallet_req_no,
     adm_sales, adm_settings, adm_setting_start, adm_setting_val,
     adm_admins, adm_add_admin_start, adm_add_admin_val, adm_del_admin,
     adm_broadcast_start, adm_broadcast_send,
@@ -281,11 +284,32 @@ def build_app(token: str) -> Application:
         per_message=False,
     )
 
+    wallet_req_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(wallet_deposit_start, pattern="^wallet_deposit$"),
+            CallbackQueryHandler(wallet_withdraw_start, pattern="^wallet_withdraw$"),
+        ],
+        states={S_WALLET_REQ: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_req_amount)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )
+
+    plan_name_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(plan_selected, pattern="^plan_\\d+$")],
+        states={S_CFG_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, config_name_input),
+            CallbackQueryHandler(config_name_random, pattern="^cfg_random$"),
+        ]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )
+
     # ─── Register conversations first ─────────────────────────────────────────
     for conv in [
         plan_add_conv, panel_add_conv, settings_conv,
         discount_conv, topup_conv, add_admin_conv, broadcast_conv,
         ticket_conv, ticket_reply_conv, extend_conv,
+        wallet_req_conv, plan_name_conv,
     ]:
         app.add_handler(conv)
 
@@ -301,7 +325,6 @@ def build_app(token: str) -> Application:
 
     # User
     app.add_handler(CallbackQueryHandler(shop,          pattern="^shop$"))
-    app.add_handler(CallbackQueryHandler(plan_selected, pattern="^plan_\\d+$"))
     app.add_handler(CallbackQueryHandler(pay_handler,   pattern="^pay_(balance|zarinpal|usdt|tron|ton)_\\d+$"))
     app.add_handler(CallbackQueryHandler(crypto_paid,   pattern="^crypto_paid_\\d+$"))
     app.add_handler(CallbackQueryHandler(my_account,    pattern="^my_account$"))
@@ -335,6 +358,10 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(adm_pay_detail,    pattern="^adm_pay_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_pay_ok,        pattern="^adm_pay_ok_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_pay_no,        pattern="^adm_pay_no_\\d+$"))
+    app.add_handler(CallbackQueryHandler(adm_wallet_reqs,   pattern="^adm_wallet_reqs$"))
+    app.add_handler(CallbackQueryHandler(adm_wallet_req_detail, pattern="^adm_wr_\\d+$"))
+    app.add_handler(CallbackQueryHandler(adm_wallet_req_ok,  pattern="^adm_wr_ok_\\d+$"))
+    app.add_handler(CallbackQueryHandler(adm_wallet_req_no,  pattern="^adm_wr_no_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_sales,         pattern="^adm_sales$"))
     app.add_handler(CallbackQueryHandler(adm_settings,      pattern="^adm_settings$"))
     app.add_handler(CallbackQueryHandler(adm_admins,        pattern="^adm_admins$"))
@@ -353,6 +380,7 @@ def build_app(token: str) -> Application:
 
 def main():
     import os
+    load_dotenv()
 
     # ── LICENSE CHECK ──────────────────────────────────────────────────────────
     from license import load_and_verify

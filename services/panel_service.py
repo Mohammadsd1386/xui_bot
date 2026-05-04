@@ -137,7 +137,8 @@ class XUIApi:
                                     "up": st.get("up", 0), "down": st.get("down", 0),
                                     "total": c.get("totalGB", 0),
                                     "enable": c.get("enable", True),
-                                    "expiry": c.get("expiryTime", 0)
+                                    "expiry": c.get("expiryTime", 0),
+                                    "last_online": st.get("lastOnlineTime", 0)
                                 }
             except Exception:
                 pass
