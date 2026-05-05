@@ -287,18 +287,26 @@ async def receive_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from database import get_db
     with get_db() as db:
-        db.execute("UPDATE payments SET tx_hash=? WHERE id=?", (tx, pay_id))
         row = db.execute("SELECT * FROM payments WHERE id=?", (pay_id,)).fetchone()
         if not row:
             await update.message.reply_text("❌ پرداخت یافت نشد.")
             return
         pay = dict(row)
+        prev_tx = pay.get("tx_hash") or ""
+        if prev_tx.startswith("WR:"):
+            # برای شارژ کیف، شناسه درخواست را نگه می‌داریم تا ادمین بتواند تایید نهایی انجام دهد.
+            prefix = prev_tx.split("|")[0]
+            tx_store = f"{prefix}|{tx}" if tx else prefix
+        else:
+            tx_store = tx
+        db.execute("UPDATE payments SET tx_hash=? WHERE id=?", (tx_store, pay_id))
 
+    target_label = "کیف پول شما شارژ می‌شود" if pay.get("currency") == "wallet_deposit" else "سرویس فعال می‌شود"
     await update.message.reply_text(
         f"✅ *رسید دریافت شد!*\n"
         f"🆔 شناسه پرداخت: `{pay_id}`\n"
-        f"پس از تأیید ادمین، سرویس فعال می‌شود.",
-        parse_mode="Markdown"
+        f"پس از تأیید ادمین، {target_label}.",
+        parse_mode="Markdown",
     )
 
     user = update.effective_user

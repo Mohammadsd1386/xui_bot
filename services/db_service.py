@@ -393,7 +393,9 @@ def get_pending_wallet_requests() -> list:
         rows = db.execute(
             "SELECT wr.*, u.username, u.full_name FROM wallet_requests wr "
             "JOIN users u ON u.telegram_id=wr.user_id "
-            "WHERE wr.status='pending' ORDER BY wr.created_at DESC"
+            "WHERE wr.status='pending' "
+            "AND NOT (wr.type='deposit' AND wr.note='awaiting_payment') "
+            "ORDER BY wr.created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 

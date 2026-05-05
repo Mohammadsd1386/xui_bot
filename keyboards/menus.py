@@ -124,7 +124,7 @@ def adm_main_kb():
         [("👥 کاربران", "adm_users"), ("📦 پلن‌ها", "adm_plans")],
         [("🖥 پنل‌ها", "adm_panels"), ("📊 گزارش فروش", "adm_sales")],
         [("💳 پرداخت‌های انتظار", "adm_payments"), ("👛 درخواست‌های کیف", "adm_wallet_reqs")],
-        [("⚙️ تنظیمات", "adm_settings")],
+        [("⚙️ تنظیمات", "adm_settings"), ("🗄 بکاپ دیتابیس", "adm_backup_db")],
         [("👨‍💼 مدیریت ادمین‌ها", "adm_admins"), ("📢 ارسال همگانی", "adm_broadcast")],
         [("🔙 منوی اصلی", "main_menu")]
     ])

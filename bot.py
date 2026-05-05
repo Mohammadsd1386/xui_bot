@@ -17,8 +17,8 @@ from handlers.user_handler import (
     support, new_ticket_start, ticket_subject, ticket_message,
     my_tickets, ticket_view,
     admin_ticket_reply_start, admin_ticket_reply_send,
-    wallet_deposit_start, wallet_withdraw_start, wallet_req_amount,
-    S_TICKET_SUBJECT, S_TICKET_MSG, S_TICKET_REPLY, S_WALLET_REQ,
+    wallet_deposit_start, wallet_withdraw_start, wallet_req_amount, wallet_req_destination, wallet_pay_handler,
+    S_TICKET_SUBJECT, S_TICKET_MSG, S_TICKET_REPLY, S_WALLET_REQ, S_WALLET_DEST,
 )
 from handlers.shop_handler import (
     shop, plan_selected, config_name_input, config_name_random, pay_handler, crypto_paid, receive_hash,
@@ -38,6 +38,7 @@ from handlers.admin_handler import (
     adm_payments, adm_pay_detail, adm_pay_ok, adm_pay_no,
     adm_wallet_reqs, adm_wallet_req_detail, adm_wallet_req_ok, adm_wallet_req_no,
     adm_sales, adm_settings, adm_setting_start, adm_setting_val, adm_sync_rates,
+    adm_backup_db,
     adm_admins, adm_add_admin_start, adm_add_admin_val, adm_del_admin,
     adm_broadcast_start, adm_broadcast_send,
     cancel,
@@ -343,7 +344,11 @@ def build_app(token: str) -> Application:
     extend_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(extend_start, pattern="^extend_(gb|days)_\\d+$")],
         states={S_EXTEND_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, extend_value)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CallbackQueryHandler(my_orders, pattern="^my_orders$"),
+            CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            CommandHandler("cancel", cancel),
+        ],
         per_message=False,
     )
 
@@ -352,8 +357,15 @@ def build_app(token: str) -> Application:
             CallbackQueryHandler(wallet_deposit_start, pattern="^wallet_deposit$"),
             CallbackQueryHandler(wallet_withdraw_start, pattern="^wallet_withdraw$"),
         ],
-        states={S_WALLET_REQ: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_req_amount)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
+        states={
+            S_WALLET_REQ: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_req_amount)],
+            S_WALLET_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_req_destination)],
+        },
+        fallbacks=[
+            CallbackQueryHandler(wallet, pattern="^wallet$"),
+            CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            CommandHandler("cancel", cancel),
+        ],
         per_message=False,
     )
 
@@ -363,7 +375,11 @@ def build_app(token: str) -> Application:
             MessageHandler(filters.TEXT & ~filters.COMMAND, config_name_input),
             CallbackQueryHandler(config_name_random, pattern="^cfg_random$"),
         ]},
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CallbackQueryHandler(shop, pattern="^shop$"),
+            CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            CommandHandler("cancel", cancel),
+        ],
         per_message=False,
     )
 
@@ -401,6 +417,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(my_orders,     pattern="^my_orders$"))
     app.add_handler(CallbackQueryHandler(order_detail,  pattern="^order_\\d+$"))
     app.add_handler(CallbackQueryHandler(wallet,        pattern="^wallet$"))
+    app.add_handler(CallbackQueryHandler(wallet_pay_handler, pattern="^wpay_(zarinpal|card2card|usdt|tron|ton)_\\d+$"))
     app.add_handler(CallbackQueryHandler(referral,      pattern="^referral$"))
     app.add_handler(CallbackQueryHandler(free_test,     pattern="^free_test$"))
     app.add_handler(CallbackQueryHandler(support,       pattern="^support$"))
@@ -434,6 +451,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(adm_wallet_req_ok,  pattern="^adm_wr_ok_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_wallet_req_no,  pattern="^adm_wr_no_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_sales,         pattern="^adm_sales$"))
+    app.add_handler(CallbackQueryHandler(adm_backup_db,     pattern="^adm_backup_db$"))
     app.add_handler(CallbackQueryHandler(adm_sync_rates,    pattern="^adm_sync_rates$"))
     app.add_handler(CallbackQueryHandler(adm_settings,      pattern="^adm_settings$"))
     app.add_handler(CallbackQueryHandler(adm_admins,        pattern="^adm_admins$"))

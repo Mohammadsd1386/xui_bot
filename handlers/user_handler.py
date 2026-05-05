@@ -7,14 +7,17 @@ from services.db_service import (
     upsert_user, get_user, get_user_orders, get_order, get_plan, get_user_tickets,
     get_ticket, get_ticket_messages, create_ticket, add_ticket_message,
     get_admin_ids, is_admin, mark_free_test_used, create_order, activate_order,
-    get_plans, get_panels, create_wallet_request
+    get_plans, get_panels, create_wallet_request, create_payment
 )
 from services.panel_service import get_api
 from keyboards.menus import (
     main_menu_kb, orders_kb, order_detail_kb, support_kb,
     my_tickets_kb, back_btn
 )
-from utils.helpers import fmt_rial, fmt_date, fmt_bytes, days_left, make_email, pct_bar
+from utils.helpers import (
+    fmt_rial, fmt_date, fmt_bytes, days_left, make_email, pct_bar,
+    gateway_label, effective_usdt_rate_toman,
+)
 from utils.service_delivery import send_activation_to_user
 from handlers.common import require_not_banned, answer
 
@@ -25,6 +28,7 @@ S_TICKET_SUBJECT = 300
 S_TICKET_MSG = 301
 S_TICKET_REPLY = 302
 S_WALLET_REQ = 303
+S_WALLET_DEST = 304
 
 
 @require_not_banned
@@ -210,7 +214,7 @@ async def wallet_withdraw_start(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    req_type = context.user_data.pop("wallet_req_type", "")
+    req_type = context.user_data.get("wallet_req_type", "")
     if req_type not in ("deposit", "withdraw"):
         await update.message.reply_text("❌ درخواست منقضی شده. دوباره از بخش کیف پول اقدام کنید.")
         return ConversationHandler.END
@@ -220,36 +224,190 @@ async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError
     except ValueError:
         await update.message.reply_text("❌ مبلغ معتبر وارد کنید:")
-        context.user_data["wallet_req_type"] = req_type
         return S_WALLET_REQ
     uid = update.effective_user.id
-    req_id = create_wallet_request(uid, req_type, amount)
-    action_title = "شارژ" if req_type == "deposit" else "برداشت"
+    if req_type == "withdraw":
+        context.user_data["wallet_withdraw_amount"] = amount
+        await update.message.reply_text(
+            "💳 لطفا شماره کارت یا آدرس ولت مقصد را ارسال کنید:",
+            reply_markup=back_btn("wallet"),
+        )
+        return S_WALLET_DEST
+
+    req_id = create_wallet_request(uid, "deposit", amount, note="awaiting_payment")
+    context.user_data.pop("wallet_req_type", None)
     await update.message.reply_text(
-        f"✅ درخواست {action_title} ثبت شد.\n"
+        f"🧾 درخواست شارژ ثبت شد.\n"
+        f"🆔 شناسه درخواست: `{req_id}`\n"
+        f"💰 مبلغ: `{fmt_rial(amount)}`\n\n"
+        f"حالا روش پرداخت را انتخاب کنید:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 زرین‌پال", callback_data=f"wpay_zarinpal_{req_id}")],
+            [InlineKeyboardButton("🏦 کارت به کارت", callback_data=f"wpay_card2card_{req_id}")],
+            [InlineKeyboardButton("💎 تتر BEP20", callback_data=f"wpay_usdt_{req_id}"),
+             InlineKeyboardButton("🔵 ترون TRC20", callback_data=f"wpay_tron_{req_id}")],
+            [InlineKeyboardButton("🪙 تون کوین", callback_data=f"wpay_ton_{req_id}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="wallet")],
+        ]),
+    )
+    return ConversationHandler.END
+
+
+async def wallet_req_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    req_type = context.user_data.pop("wallet_req_type", "")
+    amount = context.user_data.pop("wallet_withdraw_amount", None)
+    if req_type != "withdraw" or not amount:
+        await update.message.reply_text("❌ درخواست منقضی شده. دوباره از بخش کیف پول اقدام کنید.")
+        return ConversationHandler.END
+    destination = (update.message.text or "").strip()
+    if len(destination) < 8:
+        context.user_data["wallet_req_type"] = "withdraw"
+        context.user_data["wallet_withdraw_amount"] = amount
+        await update.message.reply_text("❌ شماره کارت/ولت معتبر وارد کنید:")
+        return S_WALLET_DEST
+    uid = update.effective_user.id
+    req_id = create_wallet_request(uid, "withdraw", int(amount), note=f"destination:{destination}")
+    await update.message.reply_text(
+        f"✅ درخواست برداشت ثبت شد.\n"
         f"🆔 شناسه: `{req_id}`\n"
         f"💰 مبلغ: `{fmt_rial(amount)}`\n"
+        f"🏦 مقصد: `{destination}`\n"
         f"پس از تایید ادمین انجام می‌شود.",
         parse_mode="Markdown",
-        reply_markup=back_btn("wallet")
+        reply_markup=back_btn("wallet"),
     )
-    from services.db_service import get_admin_ids
     for aid in get_admin_ids():
         try:
             await context.bot.send_message(
                 aid,
-                f"👛 درخواست کیف پول جدید\n"
+                f"👛 درخواست برداشت جدید\n"
                 f"🆔 `{req_id}` | کاربر `{uid}`\n"
-                f"نوع: {'شارژ' if req_type == 'deposit' else 'برداشت'}\n"
-                f"مبلغ: {fmt_rial(amount)}",
+                f"مبلغ: {fmt_rial(amount)}\n"
+                f"مقصد: `{destination}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("مشاهده", callback_data=f"adm_wr_{req_id}")
-                ]])
+                ]]),
             )
         except Exception:
             pass
     return ConversationHandler.END
+
+
+@require_not_banned
+async def wallet_pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    gateway = parts[1]
+    req_id = int(parts[2])
+    uid = query.from_user.id
+    from database import get_db
+    with get_db() as db:
+        req = db.execute(
+            "SELECT * FROM wallet_requests WHERE id=? AND user_id=? AND status='pending'",
+            (req_id, uid),
+        ).fetchone()
+    if not req:
+        await query.edit_message_text("❌ درخواست معتبر نیست یا قبلا رسیدگی شده.", reply_markup=back_btn("wallet"))
+        return
+    req = dict(req)
+    amount = int(req["amount_rial"])
+    if gateway == "zarinpal":
+        merchant = get_setting("zarinpal_merchant", "")
+        if not merchant:
+            await query.edit_message_text("❌ زرین‌پال هنوز تنظیم نشده.", reply_markup=back_btn("wallet"))
+            return
+        from services.payment_service import ZarinPalService
+        zp = ZarinPalService(merchant)
+        callback = get_setting("zarinpal_callback", "https://t.me/your_bot")
+        ok, url_or_err, authority = await zp.request(amount, f"شارژ کیف #{req_id}", callback)
+        if not ok:
+            await query.edit_message_text(f"❌ خطای زرین‌پال:\n{url_or_err}", reply_markup=back_btn("wallet"))
+            return
+        pay_id = create_payment(uid, None, amount, "zarinpal")
+        with get_db() as db:
+            db.execute("UPDATE payments SET currency='wallet_deposit', tx_hash=? WHERE id=?",
+                       (f"WR:{req_id}|AUTH:{authority}", pay_id))
+        await query.edit_message_text(
+            f"🏦 *زرین‌پال شارژ کیف*\n"
+            f"💰 مبلغ: `{fmt_rial(amount)}`\n\n"
+            f"پس از پرداخت، اگر خودکار ثبت نشد رسید را ارسال کنید.\n"
+            f"🆔 شناسه پرداخت: `{pay_id}`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 پرداخت آنلاین", url=url_or_err)],
+                [InlineKeyboardButton("✅ پرداخت کردم", callback_data=f"crypto_paid_{pay_id}")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="wallet")],
+            ]),
+        )
+        return
+
+    enabled_map = {
+        "card2card": "pay_card2card_enabled",
+        "usdt": "pay_usdt_enabled",
+        "tron": "pay_tron_enabled",
+        "ton": "pay_ton_enabled",
+    }
+    if get_setting(enabled_map.get(gateway, ""), "1") != "1":
+        await query.edit_message_text("❌ این روش پرداخت غیرفعال است.", reply_markup=back_btn("wallet"))
+        return
+
+    pay_id = create_payment(uid, None, amount, gateway)
+    with get_db() as db:
+        db.execute("UPDATE payments SET currency='wallet_deposit', tx_hash=? WHERE id=?", (f"WR:{req_id}", pay_id))
+
+    if gateway == "card2card":
+        card_no = get_setting("card2card_number", "")
+        card_holder = get_setting("card2card_holder", "")
+        if not card_no:
+            await query.edit_message_text("❌ شماره کارت هنوز تنظیم نشده.", reply_markup=back_btn("wallet"))
+            return
+        await query.edit_message_text(
+            "🏦 *شارژ کیف با کارت‌به‌کارت*\n\n"
+            f"💰 مبلغ: `{fmt_rial(amount)}`\n"
+            f"💳 شماره کارت: `{card_no}`\n"
+            f"👤 صاحب کارت: `{card_holder or '—'}`\n\n"
+            f"🆔 شناسه پرداخت: `{pay_id}`\n"
+            "پس از واریز، رسید یا شماره پیگیری را ارسال کنید.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ پرداخت کردم", callback_data=f"crypto_paid_{pay_id}")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="wallet")],
+            ]),
+        )
+        return
+
+    usd_rate = effective_usdt_rate_toman()
+    price_usd = round(amount / usd_rate, 4)
+    wallets = {
+        "usdt": (get_setting("usdt_bep20_address"), "BEP20 (BSC)", "USDT", price_usd),
+        "tron": (get_setting("tron_address"), "TRC20 (Tron)", "USDT", price_usd),
+        "ton": (
+            get_setting("ton_address"), "TON Network", "TON",
+            round(price_usd / float(get_setting("ton_price_usd", "3.5")), 4),
+        ),
+    }
+    addr, network, coin, amt = wallets.get(gateway, ("", "", "", 0))
+    if not addr:
+        await query.edit_message_text("❌ این درگاه تنظیم نشده است.", reply_markup=back_btn("wallet"))
+        return
+    memo = get_setting("ton_memo", "")
+    memo_text = f"\n📝 Memo: `{memo}`" if gateway == "ton" and memo else ""
+    await query.edit_message_text(
+        f"💳 *{gateway_label(gateway)} — شارژ کیف*\n\n"
+        f"💰 مبلغ: `{amt} {coin}`\n"
+        f"🌐 شبکه: `{network}`\n"
+        f"📍 آدرس واریز:\n`{addr}`{memo_text}\n\n"
+        f"🆔 شناسه پرداخت: `{pay_id}`\n"
+        "پس از پرداخت، هش یا رسید را ارسال کنید.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ پرداخت کردم", callback_data=f"crypto_paid_{pay_id}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="wallet")],
+        ]),
+    )
 
 
 @require_not_banned

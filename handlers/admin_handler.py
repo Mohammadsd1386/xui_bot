@@ -1,8 +1,12 @@
 import logging
+import sqlite3
+import tempfile
+import time
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
-from database import get_db, get_setting, set_setting
+from database import get_db, get_setting, set_setting, DB_PATH
 from services.db_service import (
     get_users_page, count_users, get_user, set_discount, add_balance, ban_user,
     get_plans, get_plan, get_order, add_plan, toggle_plan, delete_plan, update_plan_field,
@@ -589,8 +593,46 @@ async def adm_pay_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
             orow = db.execute("SELECT * FROM orders WHERE id=?", (pay["order_id"],)).fetchone()
             order = dict(orow) if orow else None
 
-    if not pay or not order:
-        await query.edit_message_text("❌ پرداخت یا سفارش یافت نشد.", reply_markup=back_btn("adm_payments"))
+    if not pay:
+        await query.edit_message_text("❌ پرداخت یافت نشد.", reply_markup=back_btn("adm_payments"))
+        return
+
+    # Wallet top-up payment (order-less)
+    if pay.get("currency") == "wallet_deposit" and not order:
+        raw = pay.get("tx_hash") or ""
+        wr_id = None
+        if raw.startswith("WR:"):
+            try:
+                wr_id = int(raw.split("|")[0].split(":", 1)[1])
+            except Exception:
+                wr_id = None
+        if not wr_id:
+            await query.edit_message_text("❌ شناسه درخواست شارژ در پرداخت مشخص نیست.", reply_markup=back_btn("adm_payments"))
+            return
+        res = approve_wallet_request(wr_id, update.effective_user.id)
+        if not res or res.get("error"):
+            err = (res or {}).get("error") or "درخواست شارژ معتبر نیست."
+            await query.edit_message_text(f"❌ {err}", reply_markup=back_btn("adm_payments"))
+            return
+        confirm_payment(pay_id, pay.get("tx_hash"))
+        await query.edit_message_text(
+            f"✅ شارژ کیف پول تایید شد.\n"
+            f"🆔 درخواست: `{wr_id}`\n"
+            f"💰 مبلغ: `{fmt_rial(pay['amount_rial'])}`",
+            parse_mode="Markdown",
+            reply_markup=back_btn("adm_payments"),
+        )
+        try:
+            await context.bot.send_message(
+                pay["user_id"],
+                f"✅ شارژ کیف پول شما تایید شد.\n💰 مبلغ: {fmt_rial(pay['amount_rial'])}",
+            )
+        except Exception:
+            pass
+        return
+
+    if not order:
+        await query.edit_message_text("❌ سفارش مرتبط با این پرداخت یافت نشد.", reply_markup=back_btn("adm_payments"))
         return
 
     await query.edit_message_text("⏳ در حال فعال‌سازی سرویس...")
@@ -608,7 +650,16 @@ async def adm_pay_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     pay_id = int(query.data.split("_")[3])
     with get_db() as db:
-        p = db.execute("SELECT user_id FROM payments WHERE id=?", (pay_id,)).fetchone()
+        p = db.execute("SELECT user_id, currency, tx_hash FROM payments WHERE id=?", (pay_id,)).fetchone()
+    pdata = dict(p) if p else {}
+    if pdata.get("currency") == "wallet_deposit":
+        raw = pdata.get("tx_hash") or ""
+        if raw.startswith("WR:"):
+            try:
+                wr_id = int(raw.split("|")[0].split(":", 1)[1])
+                reject_wallet_request(wr_id, update.effective_user.id)
+            except Exception:
+                pass
     reject_payment(pay_id)
     await query.edit_message_text("❌ پرداخت رد شد.", reply_markup=back_btn("adm_payments"))
     if p:
@@ -647,11 +698,16 @@ async def adm_wallet_req_detail(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ درخواست یافت نشد یا رسیدگی شده است.", reply_markup=back_btn("adm_wallet_reqs"))
         return
     typ = "شارژ کیف پول" if req["type"] == "deposit" else "برداشت از کیف پول"
+    destination = "—"
+    note = req.get("note") or ""
+    if note.startswith("destination:"):
+        destination = note.split("destination:", 1)[1].strip() or "—"
     text = (
         f"👛 *درخواست #{req_id}*\n\n"
         f"نوع: `{typ}`\n"
         f"کاربر: `{req['user_id']}` - {req.get('full_name') or '—'}\n"
         f"مبلغ: `{fmt_rial(req['amount_rial'])}`\n"
+        f"مقصد برداشت: `{destination}`\n"
         f"توضیح: {req.get('note') or '—'}\n"
         f"زمان: {fmt_date(req['created_at'])}"
     )
@@ -717,6 +773,39 @@ async def adm_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for gw in s["by_gateway"]:
         text += f"• {gateway_label(gw['gateway'])}: `{fmt_rial(gw['t'])}` ({gw['c']} فقره)\n"
     await query.edit_message_text(text, reply_markup=back_btn("adm_main"), parse_mode="Markdown")
+
+
+@require_admin
+async def adm_backup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⏳ در حال آماده‌سازی بکاپ دیتابیس...")
+    ts = int(time.time())
+    backup_name = f"vpnbot-backup-{ts}.db"
+    tmp_file = Path(tempfile.gettempdir()) / backup_name
+    try:
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(tmp_file)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        await context.bot.send_document(
+            chat_id=update.effective_user.id,
+            document=str(tmp_file),
+            filename=backup_name,
+            caption="✅ بکاپ دیتابیس آماده شد.",
+        )
+        await query.edit_message_text("✅ بکاپ ارسال شد.", reply_markup=back_btn("adm_main"))
+    except Exception as e:
+        await query.edit_message_text(f"❌ خطا در بکاپ: {e}", reply_markup=back_btn("adm_main"))
+    finally:
+        try:
+            if tmp_file.exists():
+                tmp_file.unlink()
+        except Exception:
+            pass
 
 
 # ── SETTINGS ──────────────────────────────────────────────────────────────────
