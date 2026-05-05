@@ -82,7 +82,7 @@ class XUIApi:
         settings = json.dumps({"clients": [client]})
         ok, res = await self._req("POST", "/inbounds/addClient", {"id": ib_id, "settings": settings})
         if ok:
-            sub_link = f"http://v2.vipiranpanel.ir:2095/subs/{sub_id}"
+            sub_link = f"http://subx.artalivo.ir:80/safesuxb/{sub_id}"
             return True, {"uuid": uid, "sub_link": sub_link}
         return False, res
 
