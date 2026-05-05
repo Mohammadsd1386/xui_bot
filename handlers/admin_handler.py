@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import tempfile
 import time
+import shutil
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -784,19 +785,26 @@ async def adm_backup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     backup_name = f"vpnbot-backup-{ts}.db"
     tmp_file = Path(tempfile.gettempdir()) / backup_name
     try:
-        src = sqlite3.connect(DB_PATH)
+        # مسیر اصلی: بکاپ استاندارد SQLite (امن برای دیتابیس‌های WAL)
+        src = sqlite3.connect(DB_PATH, timeout=20, check_same_thread=False)
         dst = sqlite3.connect(tmp_file)
         try:
             src.backup(dst)
-        finally:
+        except Exception:
+            # مسیر جایگزین: کپی مستقیم فایل دیتابیس در صورت خطای غیرمنتظره
             dst.close()
             src.close()
-        await context.bot.send_document(
-            chat_id=update.effective_user.id,
-            document=str(tmp_file),
-            filename=backup_name,
-            caption="✅ بکاپ دیتابیس آماده شد.",
-        )
+            shutil.copy2(DB_PATH, tmp_file)
+        else:
+            dst.close()
+            src.close()
+        with tmp_file.open("rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_user.id,
+                document=f,
+                filename=backup_name,
+                caption="✅ بکاپ دیتابیس آماده شد.",
+            )
         await query.edit_message_text("✅ بکاپ ارسال شد.", reply_markup=back_btn("adm_main"))
     except Exception as e:
         await query.edit_message_text(f"❌ خطا در بکاپ: {e}", reply_markup=back_btn("adm_main"))

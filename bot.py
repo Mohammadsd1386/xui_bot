@@ -17,7 +17,8 @@ from handlers.user_handler import (
     support, new_ticket_start, ticket_subject, ticket_message,
     my_tickets, ticket_view,
     admin_ticket_reply_start, admin_ticket_reply_send,
-    wallet_deposit_start, wallet_withdraw_start, wallet_req_amount, wallet_req_destination, wallet_pay_handler,
+    wallet_deposit_start, wallet_withdraw_start, wallet_req_amount, wallet_req_destination,
+    wallet_pay_handler, wallet_conv_fallback, wallet_req_text_cancel,
     S_TICKET_SUBJECT, S_TICKET_MSG, S_TICKET_REPLY, S_WALLET_REQ, S_WALLET_DEST,
 )
 from handlers.shop_handler import (
@@ -362,8 +363,12 @@ def build_app(token: str) -> Application:
             S_WALLET_DEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_req_destination)],
         },
         fallbacks=[
-            CallbackQueryHandler(wallet, pattern="^wallet$"),
-            CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            CallbackQueryHandler(wallet_conv_fallback, pattern="^(wallet|my_account)$"),
+            MessageHandler(
+                filters.Regex(r"^(🛍 خرید سرویس|👤 حساب کاربری|📦 سرویس‌های من|💳 کیف پول|👥 دعوت دوستان|🎫 تست رایگان|📞 پشتیبانی|⚙️ پنل ادمین)$")
+                & ~filters.COMMAND,
+                wallet_req_text_cancel
+            ),
             CommandHandler("cancel", cancel),
         ],
         per_message=False,

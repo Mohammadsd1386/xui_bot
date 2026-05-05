@@ -296,6 +296,36 @@ async def wallet_req_destination(update: Update, context: ContextTypes.DEFAULT_T
 
 
 @require_not_banned
+async def wallet_conv_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """خروج تمیز از state کیف پول و هدایت به مقصد انتخابی."""
+    context.user_data.pop("wallet_req_type", None)
+    context.user_data.pop("wallet_withdraw_amount", None)
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    target = query.data or "wallet"
+    if target == "wallet":
+        await wallet(update, context)
+    elif target == "my_account":
+        await my_account(update, context)
+    else:
+        await query.answer()
+    return ConversationHandler.END
+
+
+@require_not_banned
+async def wallet_req_text_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    اگر کاربر در حالت دریافت مبلغ/مقصد کیف پول روی دکمه‌های متنی منوی اصلی زد،
+    کانورسیشن را تمیز ببند تا دیگر خطای «مبلغ معتبر» تکرار نشود.
+    """
+    context.user_data.pop("wallet_req_type", None)
+    context.user_data.pop("wallet_withdraw_amount", None)
+    await update.message.reply_text("↩️ عملیات کیف پول لغو شد. از منو ادامه دهید.")
+    return ConversationHandler.END
+
+
+@require_not_banned
 async def wallet_pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
