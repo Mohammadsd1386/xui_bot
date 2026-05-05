@@ -70,6 +70,86 @@ async def adm_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _render_admin_user_text(uid: int, user: dict) -> str:
+    st = get_user_financial_stats(uid)
+    with get_db() as db:
+        last_pay = db.execute(
+            "SELECT MAX(confirmed_at) as t FROM payments WHERE user_id=? AND status='confirmed'", (uid,)
+        ).fetchone()
+    return (
+        f"👤 *اطلاعات کاربر*\n\n"
+        f"🆔 آیدی: `{uid}`\n"
+        f"👤 نام: {user.get('full_name') or '—'}\n"
+        f"🔖 یوزرنیم: @{user.get('username') or '—'}\n"
+        f"📦 سفارش‌ها: `{st['orders_count']}`\n"
+        f"💳 مجموع پرداخت تاییدشده: `{fmt_rial(st['total_paid_rial'])}`\n"
+        f"🛍 مجموع خرید: `{fmt_rial(st['total_buy_rial'])}`\n"
+        f"💾 مجموع حجم خریداری‌شده: `{round(st['total_gb'], 2)} GB`\n"
+        f"➕ شارژ کیف تاییدشده: `{fmt_rial(st['wallet_deposit_rial'])}`\n"
+        f"➖ برداشت کیف تاییدشده: `{fmt_rial(st['wallet_withdraw_rial'])}`\n"
+        f"👛 موجودی: `{fmt_rial(user.get('balance_rial', 0))}`\n"
+        f"🎁 تخفیف: `{user.get('discount_pct', 0)}%`\n"
+        f"🚫 مسدود: {'بله' if user.get('is_banned') else 'خیر'}\n"
+        f"📅 عضویت: {fmt_date(user.get('created_at', 0))}\n"
+        f"🕒 آخرین پرداخت تاییدشده: {fmt_date((last_pay['t'] if last_pay else 0) or 0)}"
+    )
+
+
+@require_admin
+async def adm_user_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🔍 آیدی کاربر را با دستور زیر بفرستید:\n\n`/user 123456789`\n\n"
+        "یا فقط آیدی عددی را ارسال کنید.",
+        parse_mode="Markdown",
+        reply_markup=back_btn("adm_users"),
+    )
+    return S_SEARCH_USER
+
+
+@require_admin
+async def adm_user_search_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = (update.message.text or "").strip()
+    if raw.startswith("/user"):
+        parts = raw.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ فرمت صحیح: /user <telegram_id>")
+            return S_SEARCH_USER
+        raw = parts[1].strip()
+    try:
+        uid = int(raw)
+    except ValueError:
+        await update.message.reply_text("❌ آیدی عددی معتبر بفرستید.")
+        return S_SEARCH_USER
+    user = get_user(uid)
+    if not user:
+        await update.message.reply_text("❌ کاربر یافت نشد.", reply_markup=back_btn("adm_users"))
+        return ConversationHandler.END
+    text = _render_admin_user_text(uid, user)
+    await update.message.reply_text(text, reply_markup=adm_user_detail_kb(uid), parse_mode="Markdown")
+    return ConversationHandler.END
+
+
+@require_admin
+async def adm_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("❌ فرمت صحیح: /user <telegram_id>")
+        return
+    try:
+        uid = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ آیدی عددی معتبر بفرستید.")
+        return
+    user = get_user(uid)
+    if not user:
+        await update.message.reply_text("❌ کاربر یافت نشد.")
+        return
+    text = _render_admin_user_text(uid, user)
+    await update.message.reply_text(text, reply_markup=adm_user_detail_kb(uid), parse_mode="Markdown")
+
+
 @require_admin
 async def adm_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -93,28 +173,7 @@ async def adm_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await query.edit_message_text("❌ کاربر یافت نشد.", reply_markup=back_btn("adm_users"))
         return
-    st = get_user_financial_stats(uid)
-    with get_db() as db:
-        last_pay = db.execute(
-            "SELECT MAX(confirmed_at) as t FROM payments WHERE user_id=? AND status='confirmed'", (uid,)
-        ).fetchone()
-    text = (
-        f"👤 *اطلاعات کاربر*\n\n"
-        f"🆔 آیدی: `{uid}`\n"
-        f"👤 نام: {user.get('full_name') or '—'}\n"
-        f"🔖 یوزرنیم: @{user.get('username') or '—'}\n"
-        f"📦 سفارش‌ها: `{st['orders_count']}`\n"
-        f"💳 مجموع پرداخت تاییدشده: `{fmt_rial(st['total_paid_rial'])}`\n"
-        f"🛍 مجموع خرید: `{fmt_rial(st['total_buy_rial'])}`\n"
-        f"💾 مجموع حجم خریداری‌شده: `{round(st['total_gb'], 2)} GB`\n"
-        f"➕ شارژ کیف تاییدشده: `{fmt_rial(st['wallet_deposit_rial'])}`\n"
-        f"➖ برداشت کیف تاییدشده: `{fmt_rial(st['wallet_withdraw_rial'])}`\n"
-        f"👛 موجودی: `{fmt_rial(user.get('balance_rial', 0))}`\n"
-        f"🎁 تخفیف: `{user.get('discount_pct', 0)}%`\n"
-        f"🚫 مسدود: {'بله' if user.get('is_banned') else 'خیر'}\n"
-        f"📅 عضویت: {fmt_date(user.get('created_at', 0))}\n"
-        f"🕒 آخرین پرداخت تاییدشده: {fmt_date((last_pay['t'] if last_pay else 0) or 0)}"
-    )
+    text = _render_admin_user_text(uid, user)
     await query.edit_message_text(text, reply_markup=adm_user_detail_kb(uid), parse_mode="Markdown")
 
 

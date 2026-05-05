@@ -27,6 +27,7 @@ from handlers.shop_handler import (
 )
 from handlers.admin_handler import (
     adm_main, adm_users, adm_users_page, adm_user_detail, adm_user_orders, adm_ban,
+    adm_user_search_start, adm_user_search_input, adm_user_cmd,
     adm_discount_start, adm_discount_val,
     adm_topup_start, adm_topup_val,
     adm_plans, adm_plan_detail, adm_plan_toggle, adm_plan_del,
@@ -46,7 +47,7 @@ from handlers.admin_handler import (
     S_SET_VAL,
     S_PLAN_NAME, S_PLAN_GB, S_PLAN_DAYS, S_PLAN_PRICE,
     S_PANEL_NAME, S_PANEL_URL, S_PANEL_PATH, S_PANEL_USER, S_PANEL_PASS, S_PANEL_IB,
-    S_ADMIN_ID, S_BROADCAST, S_TOPUP, S_DISCOUNT,
+    S_ADMIN_ID, S_BROADCAST, S_TOPUP, S_DISCOUNT, S_SEARCH_USER,
 )
 
 logging.basicConfig(
@@ -303,6 +304,17 @@ def build_app(token: str) -> Application:
         per_message=False,
     )
 
+    # Admin user search
+    user_search_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(adm_user_search_start, pattern="^adm_user_search$")],
+        states={S_SEARCH_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_user_search_input)]},
+        fallbacks=[
+            CallbackQueryHandler(cancel, pattern="^adm_users$"),
+            CommandHandler("cancel", cancel),
+        ],
+        per_message=False,
+    )
+
     # Add admin
     add_admin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(adm_add_admin_start, pattern="^adm_add_admin$")],
@@ -392,7 +404,7 @@ def build_app(token: str) -> Application:
     for conv in [
         plan_add_conv, panel_add_conv, settings_conv,
         discount_conv, topup_conv, add_admin_conv, broadcast_conv,
-        ticket_conv, ticket_reply_conv, extend_conv,
+        user_search_conv, ticket_conv, ticket_reply_conv, extend_conv,
         wallet_req_conv, plan_name_conv,
     ]:
         app.add_handler(conv)
@@ -401,6 +413,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu",  start))
     app.add_handler(CommandHandler("setup", setup_owner))
+    app.add_handler(CommandHandler("user", adm_user_cmd))
 
     # ─── Callback handlers ────────────────────────────────────────────────────
     # Global nav
@@ -432,7 +445,6 @@ def build_app(token: str) -> Application:
     # Admin nav
     app.add_handler(CallbackQueryHandler(adm_main,          pattern="^adm_main$"))
     app.add_handler(CallbackQueryHandler(adm_users,         pattern="^adm_users$"))
-    app.add_handler(CallbackQueryHandler(adm_users,         pattern="^adm_user_search$"))
     app.add_handler(CallbackQueryHandler(adm_users_page,    pattern="^adm_users_page_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_user_orders,   pattern="^adm_user_orders_\\d+$"))
     app.add_handler(CallbackQueryHandler(adm_user_detail,   pattern="^adm_user_\\d+$"))

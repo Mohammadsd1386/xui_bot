@@ -213,6 +213,7 @@ async def wallet_withdraw_start(update: Update, context: ContextTypes.DEFAULT_TY
     return S_WALLET_REQ
 
 
+@require_not_banned
 async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     req_type = context.user_data.get("wallet_req_type", "")
     if req_type not in ("deposit", "withdraw"):
@@ -254,6 +255,7 @@ async def wallet_req_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+@require_not_banned
 async def wallet_req_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     req_type = context.user_data.pop("wallet_req_type", "")
     amount = context.user_data.pop("wallet_withdraw_amount", None)

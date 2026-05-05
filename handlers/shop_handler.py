@@ -15,6 +15,7 @@ from services.panel_service import get_api
 from keyboards.menus import plans_kb, payment_kb, back_btn, crypto_paid_kb
 from utils.helpers import fmt_rial, apply_discount, make_email, gateway_label, effective_usdt_rate_toman
 from utils.service_delivery import send_activation_to_user
+from handlers.common import require_not_banned
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ async def _create_order_with_name(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
+@require_not_banned
 async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -244,6 +246,7 @@ async def pay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[f"pay_{pay_id}_order"] = order_id
 
 
+@require_not_banned
 async def crypto_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -256,6 +259,7 @@ async def crypto_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@require_not_banned
 async def receive_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle both text (tx hash) and photo (receipt image) for payment confirmation."""
     pay_id = context.user_data.get("awaiting_hash_for")
